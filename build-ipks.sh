@@ -19,12 +19,16 @@
 #   * teardown that won't brick the browser when no stock backup exists.
 set -euo pipefail
 
-BASE="/home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update"
+# Resolve BASE to this script's own directory (the repo checkout), so the build
+# works wherever it's cloned -- inputs (openssl-1.1.1w/, curl-7.88.1/, libssl_compat.so,
+# ntpdate-sync, BrowserServer.bin) and the ipks/ output are relative to it.
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 OUT="$BASE/ipks"; ARCH="armv7"
 MAINT="WebOS Internals <support@webos-internals.org>"
 TLSVER="1.1.1"   # browser-tls13: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
-CURLVER="1.0.0"  # curl-tls13: self-contained modern command-line curl (/usr/bin/curl11)
+CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
+LUNAVER="1.0.0"  # luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 
 LIBSSL="$BASE/openssl-1.1.1w/libssl.so.1.1"
@@ -35,7 +39,70 @@ CURLBIN="$BASE/curl-7.88.1/src/.libs/curl"
 BROWSERSERVER="$BASE/BrowserServer.bin"
 NTPSRC="$BASE/ntpdate-sync"
 
-rm -rf "$OUT"; mkdir -p "$OUT"
+# --- build prerequisites (fail fast, before doing any work) -------------------
+command -v patchelf >/dev/null 2>&1 || {
+  echo "ERROR: 'patchelf' not found in PATH -- required to RPATH BrowserServer." >&2
+  echo "       Install it (e.g. 'apt-get install patchelf', or 'brew install patchelf')." >&2
+  exit 1
+}
+
+# GNU ar is REQUIRED. The pmPostInstall.script/pmPreRemove.script members have long
+# names; BSD ar (macOS /usr/bin/ar) encodes those in a format the device's ipkg/
+# appinstaller can't read, so the packages would install but never activate.
+AR=""
+for c in gar ar /usr/local/opt/binutils/bin/ar /opt/homebrew/opt/binutils/bin/ar; do
+  { command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; } || continue
+  "$c" --version 2>/dev/null | grep -qi 'GNU ar' && { AR="$c"; break; }
+done
+[ -n "$AR" ] || {
+  echo "ERROR: GNU ar not found (your 'ar' is BSD, e.g. stock macOS)." >&2
+  echo "       BSD ar can't write the GNU long-name members the device needs." >&2
+  echo "       Install GNU binutils: 'brew install binutils' (provides GNU ar), or build on Linux." >&2
+  exit 1
+}
+
+# We need the STOCK 3.0.5 BrowserServer to RPATH. If it isn't already in the repo,
+# fetch it from a connected (factory/stock) TouchPad over novacom.
+if [ ! -f "$BROWSERSERVER" ]; then
+  echo "BrowserServer.bin not present -- fetching the stock binary from a connected TouchPad..."
+  command -v novacom >/dev/null 2>&1 || {
+    echo "ERROR: 'novacom' not found in PATH (HP webOS / Palm SDK novacom)." >&2
+    echo "       Install novacom, OR place a stock 3.0.5 BrowserServer" >&2
+    echo "       (md5 $STOCK_BS_MD5) at: $BROWSERSERVER" >&2
+    exit 1
+  }
+  if ! novacom -l 2>/dev/null | grep -qiE 'usb|tcp|topaz'; then
+    echo "ERROR: no webOS device detected over novacom -- cannot fetch BrowserServer." >&2
+    echo "       Connect a TouchPad in novacom mode (USB) and retry. 'novacom -l' should" >&2
+    echo "       list a device, e.g.:  63055 <id> usb topaz-linux" >&2
+    echo "       (Or place a stock BrowserServer at $BROWSERSERVER to skip the fetch.)" >&2
+    exit 1
+  fi
+  novacom get file:///usr/bin/BrowserServer > "$BROWSERSERVER" 2>/dev/null
+  if [ ! -s "$BROWSERSERVER" ]; then
+    echo "ERROR: novacom fetch of /usr/bin/BrowserServer failed (empty result)." >&2
+    rm -f "$BROWSERSERVER"
+    exit 1
+  fi
+  got=$(md5sum "$BROWSERSERVER" | cut -d' ' -f1)
+  if [ "$got" != "$STOCK_BS_MD5" ]; then
+    echo "ERROR: fetched BrowserServer md5 ($got) is NOT the stock 3.0.5 binary" >&2
+    echo "       (expected $STOCK_BS_MD5). The device isn't a clean 3.0.5, or its browser" >&2
+    echo "       is already patched. Factory-reset the TouchPad and retry, or place a" >&2
+    echo "       known-stock BrowserServer at $BROWSERSERVER to override." >&2
+    rm -f "$BROWSERSERVER"
+    exit 1
+  fi
+  echo "  fetched stock BrowserServer ($got) -> $BROWSERSERVER"
+else
+  echo "Using existing BrowserServer.bin ($(md5sum "$BROWSERSERVER" | cut -d' ' -f1))"
+fi
+# -----------------------------------------------------------------------------
+
+# Clean only our build artifacts in $OUT (the repo ipks/ dir) -- keep README.md etc.
+mkdir -p "$OUT"
+rm -f "$OUT"/*.ipk
+rm -rf "$OUT"/_b_tls "$OUT"/_b_ntp "$OUT"/_b_curl "$OUT"/_b_luna
 T="--owner=0 --group=0 --numeric-owner --format=ustar"
 # 1x1 transparent png (icon)
 PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
@@ -52,7 +119,7 @@ pack() { # $1 builddir  $2 ipkname
   cp "$b/control/prerm"    "$b/pmPreRemove.script"
   chmod 0755 "$b/pmPostInstall.script" "$b/pmPreRemove.script"
   # webos-internals ar member order: debian-binary, data.tar.gz, control.tar.gz, pm scripts
-  ( cd "$b" && ar rc "$OUT/$name" debian-binary data.tar.gz control.tar.gz \
+  ( cd "$b" && "$AR" rc "$OUT/$name" debian-binary data.tar.gz control.tar.gz \
         pmPostInstall.script pmPreRemove.script )
   echo "  built $name"
 }
@@ -244,7 +311,7 @@ Description: Modern command-line curl (7.88.1, TLS 1.2/1.3) for the webOS TouchP
 Section: System
 Priority: optional
 Depends:
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"curl TLS 1.3", "FullDescription":"Self-contained curl 7.88.1 (OpenSSL 1.1.1w + zlib) under /usr/lib/curl11, exposed as the command /usr/bin/curl11 (a small LD_LIBRARY_PATH wrapper). The stock /usr/bin/curl is left untouched.", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"curl TLS 1.3", "FullDescription":"curl 7.88.1 (OpenSSL 1.1.1w + zlib) under /usr/lib/curl11, installed as /usr/bin/curl11 AND /usr/bin/curl (stock 0.9.8 backed up to /usr/bin/curl.0.9.8-orig, restored on uninstall). Wrapper defaults the CA bundle to /etc/ssl/certs/ca-certificates.crt.", "License":"OpenSSL/curl" }
 EOF
 
 cat > "$B3/control/postinst" <<EOF
@@ -265,22 +332,125 @@ cp -f "$SRC/curl11/curl" "$SRC/curl11/libcurl.so.4.8.0" \
       "$SRC/curl11/libssl.so.1.1" "$SRC/curl11/libcrypto.so.1.1" /usr/lib/curl11/
 chmod 755 /usr/lib/curl11/*
 ln -sf libcurl.so.4.8.0 /usr/lib/curl11/libcurl.so.4
+# Wrapper defaults the CA bundle to webOS's (the build's compiled-in CA path doesn't
+# exist on-device); respects an existing CURL_CA_BUNDLE, and explicit --cacert wins.
 cat > /usr/bin/curl11 <<'WRAP'
 #!/bin/sh
-exec env LD_LIBRARY_PATH=/usr/lib/curl11 /usr/lib/curl11/curl "$@"
+[ -n "$CURL_CA_BUNDLE" ] || CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export CURL_CA_BUNDLE LD_LIBRARY_PATH=/usr/lib/curl11
+exec /usr/lib/curl11/curl "$@"
 WRAP
 chmod 755 /usr/bin/curl11
+# Also take over /usr/bin/curl (back up the stock 0.9.8 binary once).
+if [ -f /usr/bin/curl ] && [ ! -f /usr/bin/curl.0.9.8-orig ]; then
+    cp -p /usr/bin/curl /usr/bin/curl.0.9.8-orig
+fi
+cp -f /usr/bin/curl11 /usr/bin/curl
+chmod 755 /usr/bin/curl
 exit 0
 EOF
 
 cat > "$B3/control/prerm" <<'EOF'
 #!/bin/sh
 mount -o remount,rw / 2>/dev/null || true
+# Restore stock curl if backed up; else drop our wrapper so /usr/bin/curl isn't left dangling.
+if [ -f /usr/bin/curl.0.9.8-orig ]; then
+    mv -f /usr/bin/curl.0.9.8-orig /usr/bin/curl
+else
+    grep -q 'LD_LIBRARY_PATH=/usr/lib/curl11' /usr/bin/curl 2>/dev/null && rm -f /usr/bin/curl
+fi
 rm -f /usr/bin/curl11
 rm -rf /usr/lib/curl11
 exit 0
 EOF
 chmod 0755 "$B3/control/postinst" "$B3/control/prerm"
 pack "$B3" "${ID3}_${CURLVER}_${ARCH}.ipk"
+
+############################# luna-tls13 #############################
+# Routes the app WebKit host (LunaSysMgr / WebAppMgr -- where Mojo/Enyo XHR runs) at
+# /usr/lib/ssl11. No payload: the postinst edits the LunaSysMgr upstart launcher.
+# REQUIRES browser-tls13 (for /usr/lib/ssl11); REBOOT after install.
+ID4=org.webosinternals.luna-tls13
+B4="$OUT/_b_luna"; APPDIR4="$B4/data/usr/palm/applications/$ID4"
+mkdir -p "$B4/control" "$APPDIR4"
+cat > "$APPDIR4/appinfo.json" <<EOF
+{ "title":"Luna TLS 1.3", "id":"$ID4", "version":"$LUNAVER", "vendor":"WebOS Internals",
+  "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
+  "noWindow":true, "visible":false }
+EOF
+echo '<html><head><title>Luna TLS 1.3</title></head><body></body></html>' > "$APPDIR4/index.html"
+echo "$PNG_B64" | base64 -d > "$APPDIR4/icon.png"
+
+cat > "$B4/control/control" <<EOF
+Package: $ID4
+Version: $LUNAVER
+Architecture: $ARCH
+Maintainer: $MAINT
+Description: Modern TLS 1.2/1.3 for webOS apps (Mojo/Enyo WebKit)
+Section: System
+Priority: optional
+Depends:
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Luna TLS 1.3", "FullDescription":"Routes the app WebKit host (LunaSysMgr/WebAppMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot.", "License":"OpenSSL/curl" }
+EOF
+
+# postinst: patch the LunaSysMgr launcher to load ssl11 (+ compat shim). Backup goes
+# OUTSIDE /etc/event.d (upstart runs every file there as a job). Requires the ssl11
+# stack; never restarts LunaSysMgr (that would kill the UI/Preware) -- reboot applies it.
+cat > "$B4/control/postinst" <<'EOF'
+#!/bin/sh
+mount -o remount,rw / 2>/dev/null || true
+L=/etc/event.d/LunaSysMgr
+COMPAT=/usr/lib/ssl11/libssl_compat.so
+if [ ! -f "$COMPAT" ]; then
+    echo "luna-tls13 ERROR: /usr/lib/ssl11 stack not found -- install org.webosinternals.browser-tls13 first. Not patching."
+    exit 1
+fi
+if grep -q 'ssl11/libssl_compat.so' "$L" 2>/dev/null; then
+    echo "luna-tls13: LunaSysMgr launcher already patched."
+    exit 0
+fi
+mkdir -p /var/luna 2>/dev/null
+[ -f /var/luna/LunaSysMgr.tls13-orig ] || cp -p "$L" /var/luna/LunaSysMgr.tls13-orig
+awk '
+/export LD_PRELOAD="/ {
+    sub(/"[ \t]*$/, " /usr/lib/ssl11/libssl_compat.so\"")
+    print
+    print "\texport LD_LIBRARY_PATH=/usr/lib/ssl11"
+    next
+}
+{ print }
+' "$L" > /tmp/lsm.tls13.$$ && cat /tmp/lsm.tls13.$$ > "$L"
+rm -f /tmp/lsm.tls13.$$
+if grep -q 'ssl11/libssl_compat.so' "$L" && grep -q 'LD_LIBRARY_PATH=/usr/lib/ssl11' "$L"; then
+    echo "luna-tls13: patched LunaSysMgr launcher. REBOOT to route app WebKit through OpenSSL 1.1 / TLS 1.3."
+else
+    echo "luna-tls13 WARNING: LD_PRELOAD anchor not found; restoring stock launcher (no change)."
+    cp -f /var/luna/LunaSysMgr.tls13-orig "$L"
+    exit 1
+fi
+exit 0
+EOF
+
+cat > "$B4/control/prerm" <<'EOF'
+#!/bin/sh
+mount -o remount,rw / 2>/dev/null || true
+L=/etc/event.d/LunaSysMgr
+if [ -f /var/luna/LunaSysMgr.tls13-orig ]; then
+    cp -f /var/luna/LunaSysMgr.tls13-orig "$L"
+    rm -f /var/luna/LunaSysMgr.tls13-orig
+    echo "luna-tls13: restored stock LunaSysMgr launcher. REBOOT to return app TLS to stock."
+else
+    awk '
+    /export LD_PRELOAD="/ { gsub(/ \/usr\/lib\/ssl11\/libssl_compat.so/, ""); print; next }
+    /export LD_LIBRARY_PATH=\/usr\/lib\/ssl11/ { next }
+    { print }
+    ' "$L" > /tmp/lsm.unp.$$ && cat /tmp/lsm.unp.$$ > "$L"
+    rm -f /tmp/lsm.unp.$$
+    echo "luna-tls13: removed patch lines (no backup found). REBOOT to revert."
+fi
+exit 0
+EOF
+chmod 0755 "$B4/control/postinst" "$B4/control/prerm"
+pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk"
 
 echo "=== output ==="; ls -l "$OUT"/*.ipk

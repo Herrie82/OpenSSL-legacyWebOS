@@ -28,11 +28,18 @@ done
 echo "===== BrowserServer binary ====="
 bm=$(md5 /usr/bin/BrowserServer)
 BS_OK=0
-case "$bm" in
-  "$RPATH_BS") P "BrowserServer:" "PASS RPATH'd ($bm)"; BS_OK=1;;
-  "$STOCK_BS") P "BrowserServer:" "FAIL still STOCK ($bm) -- RPATH swap did NOT apply (postinst skipped or not installed)";;
-  *)           P "BrowserServer:" "WARN unknown build ($bm) -- not the 3.0.5 stock our ipk patches; modern TLS will be SKIPPED on this device";;
-esac
+# PASS on ANY non-stock (swapped) BrowserServer -- a fresh build-ipks.sh run may produce
+# a byte-different RPATH'd binary (different patchelf) with its own md5; that's still ours.
+# The authoritative functional check is the "on ssl11 (1.1)" maps + the curl test below.
+if [ -z "$bm" ]; then
+  P "BrowserServer:" "FAIL missing /usr/bin/BrowserServer"
+elif [ "$bm" = "$STOCK_BS" ]; then
+  P "BrowserServer:" "FAIL still STOCK ($bm) -- RPATH swap did NOT apply (postinst skipped or not installed)"
+elif [ "$bm" = "$RPATH_BS" ]; then
+  P "BrowserServer:" "PASS RPATH'd, reference build ($bm)"; BS_OK=1
+else
+  P "BrowserServer:" "PASS RPATH'd, custom build ($bm) -- not the reference a56bf4 (rebuilt patchelf?); confirm via ssl11 maps below"; BS_OK=1
+fi
 P "  .tls13-orig backup:" "$(md5 /usr/bin/BrowserServer.tls13-orig)"
 
 echo "===== libWebKitLuna (struct-offset compatibility) ====="
