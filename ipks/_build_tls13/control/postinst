@@ -2,6 +2,12 @@
 mount -o remount,rw / 2>/dev/null || true
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 
+# 0. remove stray upstart job-backups left by old (<=1.0.1) env-injection
+#    installs. Upstart runs EVERY file in /etc/event.d as a job, so a leftover
+#    browserserver.tls13-orig is a DUPLICATE launcher that fights the real one
+#    for the bus name -> endless respawn churn -> pages stop loading.
+rm -f /etc/event.d/*.tls13-orig /etc/event.d/*.orig /etc/event.d/*.preua /etc/event.d/*.pre-rpath 2>/dev/null
+
 # 1. swap in the RPATH'd BrowserServer (loads /usr/lib/ssl11 with no env, so it
 #    works regardless of which launcher starts it -- the env/wrapper approach
 #    lost the upstart-vs-ls-hubd race on boot). Back up the stock binary once.

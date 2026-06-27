@@ -1,5 +1,5 @@
 Package: org.webosinternals.ntpdate-sync
-Version: 1.0.0
+Version: 1.1.0
 Architecture: armv7
 Maintainer: Herrie <herrie82@gmail.com>
 Section: misc

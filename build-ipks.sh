@@ -7,7 +7,7 @@ set -euo pipefail
 BASE="/home/herrie/webos/touchpad-kernel/doctor305/OpenSSL-11-Update"
 OUT="$BASE/ipks"
 VER="1.0.0"
-TLSVER="1.0.2"   # browser-tls13: RPATH'd BrowserServer (env-independent, survives reboot)
+TLSVER="1.0.3"   # browser-tls13: RPATH'd BrowserServer + cleans stray event.d job-backups
 ARCH="armv7"
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 MAINT="Herrie <herrie82@gmail.com>"
@@ -17,7 +17,8 @@ LIBCRYPTO="$BASE/openssl-1.1.1w/libcrypto.so.1.1"
 LIBCOMPAT="$BASE/libssl_compat.so"
 LIBCURL="$BASE/curl-7.88.1/lib/.libs/libcurl.so.4.8.0"
 BROWSERSERVER="$BASE/BrowserServer.bin"   # stock 3.0.5 BrowserServer (md5 $STOCK_BS_MD5)
-NTPJOB="/tmp/ntpdate-sync"
+NTPJOB="$BASE/ntpdate-sync"
+NTPVER="1.1.0"   # ntpdate-sync: retry-until-success + IP fallbacks (DNS-at-boot fix)
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 TARFLAGS="--owner=0 --group=0 --numeric-owner -p"
@@ -86,6 +87,12 @@ STOCK_BS_MD5="$STOCK_BS_MD5"
 EOF
 cat >> "$B1/control/postinst" <<'EOF'
 
+# 0. remove stray upstart job-backups left by old (<=1.0.1) env-injection
+#    installs. Upstart runs EVERY file in /etc/event.d as a job, so a leftover
+#    browserserver.tls13-orig is a DUPLICATE launcher that fights the real one
+#    for the bus name -> endless respawn churn -> pages stop loading.
+rm -f /etc/event.d/*.tls13-orig /etc/event.d/*.orig /etc/event.d/*.preua /etc/event.d/*.pre-rpath 2>/dev/null
+
 # 1. swap in the RPATH'd BrowserServer (loads /usr/lib/ssl11 with no env, so it
 #    works regardless of which launcher starts it -- the env/wrapper approach
 #    lost the upstart-vs-ls-hubd race on boot). Back up the stock binary once.
@@ -144,7 +151,7 @@ install -m0755 "$NTPJOB" "$B2/data/etc/event.d/ntpdate-sync"
 ISIZE2=$(du -sk "$B2/data" | cut -f1)000
 cat > "$B2/control/control" <<EOF
 Package: org.webosinternals.ntpdate-sync
-Version: $VER
+Version: $NTPVER
 Architecture: $ARCH
 Maintainer: $MAINT
 Section: misc
@@ -175,7 +182,7 @@ cat > "$B2/control/prerm" <<'EOF'
 stop ntpdate-sync 2>/dev/null || true
 exit 0
 EOF
-pack_ipk "$B2" "org.webosinternals.ntpdate-sync_${VER}_${ARCH}.ipk"
+pack_ipk "$B2" "org.webosinternals.ntpdate-sync_${NTPVER}_${ARCH}.ipk"
 
 echo "=== output ==="
 ls -l "$OUT"/*.ipk
