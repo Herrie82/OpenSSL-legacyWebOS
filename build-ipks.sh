@@ -37,7 +37,7 @@ TLSVER="1.1.1"   # browser-tls13: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
 LUNAVER="1.0.0"  # luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13
-MAILVER="1.2.0"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11; needs browser-tls13 installed + curl-mail/ (see BUILDING-mail.md). 1.2.0: EAS hardware-proven (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
+MAILVER="1.3.0"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11; needs browser-tls13 installed + curl-mail/ (see BUILDING-mail.md). 1.3.0: full EAS+IMAP+SMTP hardware-proven -- adds LD_BIND_NOW=1 (eager binding; fixes intermittent ld.so SIGSEGV) + mojomail-imap ~A->AA tag patch (strict servers e.g. Fastmail). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 
 LIBSSL="$BASE/openssl-1.1.1w/libssl.so.1.1"
@@ -575,7 +575,11 @@ cp -f "$SRC/ssl11mail/libssl_compat.so" "$MAILDIR/libssl_compat.so"; chmod 755 "
 
 # 2. patch the four mojomail D-Bus launchers (idempotent; backup each once to /var/luna)
 mkdir -p /var/luna 2>/dev/null
-PFX='/usr/bin/env LD_LIBRARY_PATH=/usr/lib/ssl11mail LD_PRELOAD=/usr/lib/ssl11mail/libssl_compat.so CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt'
+# LD_BIND_NOW=1: force EAGER symbol binding. With lazy binding the mojomail transports
+# intermittently SIGSEGV inside the glibc-2.8 dynamic linker (do_lookup_x/check_match)
+# while first-resolving a PLT symbol across our shim + the 0.9.8->1.1 aliased OpenSSL
+# (proven on SMTP). Resolving everything up-front at exec avoids it.
+PFX='/usr/bin/env LD_BIND_NOW=1 LD_LIBRARY_PATH=/usr/lib/ssl11mail LD_PRELOAD=/usr/lib/ssl11mail/libssl_compat.so CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt'
 patched=0
 for s in eas imap pop smtp; do
     F="/usr/share/dbus-1/system-services/com.palm.$s.service"
@@ -595,6 +599,40 @@ for s in eas imap pop smtp; do
     fi
 done
 echo "mail-tls13: patched $patched / 4 mojomail launcher(s)."
+
+# 2b. one-byte patch of mojomail-imap's IMAP tag prefix "~A" -> "AA". mojomail hard-codes
+# a '~'-leading tag (ImapRequestManager: ss << "~A" << id). Strict modern servers (e.g.
+# Fastmail) reject any '~' in the tag and answer with an UNTAGGED "* BAD invalid command",
+# which mojomail can never match to its pending "~A1" request -> IMAP validation hangs 30s
+# (error 3099). Patching 0x7e('~')->0x41('A') at file offset 991784 makes tags "AA1" etc,
+# which every server accepts. md5-guarded to the stock webOS 3.0.5 binary; backed up for prerm.
+IMAPBIN=/usr/bin/mojomail-imap
+STOCK_IMAP_MD5=9f6489ae48fc131733c1a88a9aa1056a
+PATCHED_IMAP_MD5=78956f6daf374a9a940e914459f234c3
+if [ -f "$IMAPBIN" ]; then
+    im=$(md5sum "$IMAPBIN" | cut -d' ' -f1)
+    if [ "$im" = "$STOCK_IMAP_MD5" ]; then
+        cp -f "$IMAPBIN" /var/luna/mojomail-imap.tls13-orig
+        # Patch a SAME-FILESYSTEM temp copy then atomically mv over the original. An
+        # in-place dd fails with ETXTBSY while mojomail-imap is running (dbus-activated);
+        # rename(2) replaces the dir entry safely even then (the live process keeps the
+        # old inode until it next respawns -- the killall below triggers that).
+        cp -f "$IMAPBIN" "$IMAPBIN.tls13new"
+        printf 'A' | dd of="$IMAPBIN.tls13new" bs=1 seek=991784 count=1 conv=notrunc 2>/dev/null
+        nm=$(md5sum "$IMAPBIN.tls13new" | cut -d' ' -f1)
+        if [ "$nm" = "$PATCHED_IMAP_MD5" ]; then
+            chmod 755 "$IMAPBIN.tls13new"; mv -f "$IMAPBIN.tls13new" "$IMAPBIN"
+            echo "mail-tls13: patched mojomail-imap IMAP tag (~A->AA) for strict servers."
+        else
+            rm -f "$IMAPBIN.tls13new"
+            echo "mail-tls13 WARNING: mojomail-imap patch md5 unexpected ($nm) -- left stock."
+        fi
+    elif [ "$im" = "$PATCHED_IMAP_MD5" ]; then
+        echo "mail-tls13: mojomail-imap already tag-patched."
+    else
+        echo "mail-tls13 NOTE: mojomail-imap md5 $im unrecognized -- skipping tag patch (IMAP on strict servers like Fastmail may hang)."
+    fi
+fi
 
 # 3. CA bundle sanity (mail does REAL cert validation -- unlike a plain version bump)
 n=$(grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt 2>/dev/null); [ -z "$n" ] && n=0
@@ -617,11 +655,16 @@ for s in eas imap pop smtp; do
     if [ -f "$B" ]; then
         cp -f "$B" "$F"; rm -f "$B"
     else
-        # no backup -- strip our 5-token env prefix in place (env + 4 VAR= tokens)
-        awk '/^Exec=\/usr\/bin\/env .*mojomail-/ { sub(/^Exec=\/usr\/bin\/env [^ ]* [^ ]* [^ ]* [^ ]* /, "Exec="); print; next } { print }' "$F" > "/tmp/mailu.$s.$$" && cat "/tmp/mailu.$s.$$" > "$F"
+        # no backup -- strip our 6-token env prefix in place (env + 5 VAR= tokens)
+        awk '/^Exec=\/usr\/bin\/env .*mojomail-/ { sub(/^Exec=\/usr\/bin\/env [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* /, "Exec="); print; next } { print }' "$F" > "/tmp/mailu.$s.$$" && cat "/tmp/mailu.$s.$$" > "$F"
         rm -f "/tmp/mailu.$s.$$"
     fi
 done
+# restore the tag-patched mojomail-imap binary
+if [ -f /var/luna/mojomail-imap.tls13-orig ]; then
+    cp -f /var/luna/mojomail-imap.tls13-orig /usr/bin/mojomail-imap
+    rm -f /var/luna/mojomail-imap.tls13-orig
+fi
 rm -rf /usr/lib/ssl11mail
 /usr/bin/ls-control scan-services 2>/dev/null || true
 for b in mojomail-eas mojomail-imap mojomail-pop mojomail-smtp; do killall "$b" 2>/dev/null; done

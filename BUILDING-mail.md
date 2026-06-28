@@ -249,16 +249,31 @@ The four `.service` `Exec=` lines get prefixed with
    bumping the eas log level to `debug` in `com.palm.eas.service` and watching
    `/var/log/messages` (look for `libpalmsocket`, curl, HTTP, and any `received 11`).
 
-### IMAP / POP / SMTP — separate validation
+### IMAP / POP / SMTP — WORKING (v1.3.0, Fastmail-proven)
 
-EAS uses libcurl; the line protocols use **libpalmsocket** (which calls OpenSSL directly,
-`SSLv23_method`). libpalmsocket is *also* a 0.9.8-built X509 consumer, so it carries the
-same offset risk libcurl did. `luna-tls13` already runs another 0.9.8 X509 consumer
-(`libWebKitLuna`) on ssl11 OpenSSL successfully, so libpalmsocket *may* be fine — but it's
-unproven. Test an IMAP account once available; if libpalmsocket `SIGSEGV`s on the cert,
-the remedy is to widen ssl11 OpenSSL's struct-offset relocation (the `libssl_compat.so` /
-`openssl_compat_shim.c` + the offset patches in the `openssl-1.1.1w` build) to cover the
-fields it reads — a separate task that also needs the PDK toolchain.
+EAS uses libcurl; the line protocols use **libpalmsocket** (direct OpenSSL, `SSLv23_method`).
+Good news: libpalmsocket's TLS + cert verification work fine on ssl11 — the feared X509
+offset SIGSEGV never materialised. It verifies modern certs via its own CA setup
+(`/var/ssl/certs` + `SSL_CTX_set_default_verify_paths`, which honors the `SSL_CERT_FILE` env
+the launcher sets to the modern bundle). The two things that DID block IMAP/SMTP were both
+**non-TLS** and are fixed in v1.3.0:
+
+1. **Intermittent dynamic-linker SIGSEGV** (hit on SMTP). With lazy binding the transports
+   crash in glibc-2.8 `ld.so` (`do_lookup_x`/`check_match`) the first time they resolve a PLT
+   symbol across our shim + the 0.9.8→1.1 aliased OpenSSL. Fix: **`LD_BIND_NOW=1`** on all
+   four launchers (eager binding resolves everything at exec). `build-ipks.sh` puts it in the
+   launcher `PFX`.
+
+2. **mojomail's `~A` IMAP tag.** `ImapRequestManager` hard-codes a `~`-leading tag
+   (`ss << "~A" << id` → `~A1 CAPABILITY`). Strict modern servers (Fastmail) reject any `~` in
+   the tag with an **untagged** `* BAD invalid command`, which mojomail can never match to its
+   pending `~A1` request → 30 s hang, error **3099**. Diagnosed by interposing `SSL_read`/
+   `SSL_write` to dump plaintext; confirmed with `openssl s_client` (a normal `AA1` tag →
+   `AA1 OK`; `~A1` → `* BAD`). Fix: a **1-byte binary patch** of `/usr/bin/mojomail-imap`,
+   `0x7e('~')`→`0x41('A')` at file offset **991784** (→ tags `AA1`, `AA2`, …, valid everywhere).
+   The postinst md5-guards the stock 3.0.5 binary (`9f6489…`→`78956f…`), patches a same-fs
+   temp copy then `mv`s it over (in-place `dd` fails `ETXTBSY` on the running binary), backs up
+   to `/var/luna/mojomail-imap.tls13-orig`; prerm restores it. No binary is shipped in the ipk.
 
 ---
 
