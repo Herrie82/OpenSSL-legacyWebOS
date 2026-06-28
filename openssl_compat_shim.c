@@ -43,6 +43,8 @@
 #undef CRYPTO_set_id_callback
 #undef CRYPTO_get_lock_name
 #undef CRYPTO_thread_id
+#undef CONF_modules_free
+#undef SSL_CTX_get_ex_new_index
 #undef OpenSSL_add_all_algorithms
 #undef OpenSSL_add_all_ciphers
 #undef OpenSSL_add_all_digests
@@ -144,6 +146,17 @@ void RAND_cleanup(void)
 void OBJ_cleanup(void)
 {
     /* No-op in OpenSSL 1.1.x */
+}
+
+/* CONF_modules_free - a no-op macro in 1.1.x, but libpalmsocket (mojomail's
+ * IMAP/POP/SMTP + EAS account-validation transport) imports it as a real 0.9.8
+ * function. Without this forwarder the symbol is unresolved; with lazy binding
+ * the library loads and inits fine, then ABORTS (_exit 127, not a signal) the
+ * first time it frees its OpenSSL config during SSL_CTX setup -- which is why
+ * the EAS validation TLS handshake never sent a ClientHello. No-op matches 1.1. */
+void CONF_modules_free(void)
+{
+    /* No-op in OpenSSL 1.1.x - config modules auto-managed */
 }
 
 /*
@@ -290,6 +303,21 @@ void X509_OBJECT_free_contents(X509_OBJECT *obj)
     if (obj) {
         X509_OBJECT_free(obj);
     }
+}
+
+/* SSL_CTX_get_ex_new_index - a macro in 1.1.x but a real 0.9.8 function that
+ * libemail-common (mojomail's EAS transport) imports to register an ex_data slot
+ * on the SSL_CTX (for its libcurl CURLOPT_SSL_CTX_FUNCTION cert-verify callback).
+ * Unresolved, it makes the EAS account-validation worker exit(127) right after
+ * SSL_CTX_new -- before any TLS ClientHello. 1.1 expands the macro to
+ * CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_SSL_CTX, ...); do exactly that. */
+int SSL_CTX_get_ex_new_index(long argl, void *argp,
+                             CRYPTO_EX_new *new_func,
+                             CRYPTO_EX_dup *dup_func,
+                             CRYPTO_EX_free *free_func)
+{
+    return CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_SSL_CTX, argl, argp,
+                                   new_func, dup_func, free_func);
 }
 
 /*

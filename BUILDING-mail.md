@@ -143,6 +143,7 @@ tar xf curl-7.61.1.tar.gz && cd curl-7.61.1
   --with-ssl=$OSSL \
   --enable-ares=$CARES \
   --disable-static \
+  --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
   --without-brotli --without-zstd --without-libpsl --without-librtmp \
   --disable-ldap --disable-ldaps \
   CC=$CC \
@@ -153,6 +154,13 @@ tar xf curl-7.61.1.tar.gz && cd curl-7.61.1
 make -j4
 ls -l lib/.libs/libcurl.so*       # -> libcurl.so.4.x.y  (the artifact you want)
 ```
+
+> **`--with-ca-bundle` is REQUIRED, not optional.** `libemail-common`'s `CurlSSLVerifier`
+> sets no CA path and trusts libcurl's *built-in* default bundle, and **libcurl ignores the
+> `CURL_CA_BUNDLE` environment variable** (only the curl *CLI* reads it). Without the bundle
+> baked in, EAS reaches Zoho but every cert reads as untrusted (`SSL_CERT_UNTRUSTED`).
+> **7.61.1 is hardware-proven** (no longer a hypothesis) — EAS validates + syncs Mail/
+> Contacts/Calendar/Tasks to Zoho on TLS 1.3.
 
 Notes:
 - `--with-ssl=$OSSL` (curl ≤7.76 spelling; 7.77+ also accepts `--with-openssl`).
@@ -196,8 +204,20 @@ lays it out so mojomail uses *our* libcurl + ssl11 OpenSSL, while everything els
   libcrypto.so.1.1     -> /usr/lib/ssl11/libcrypto.so.1.1
   libssl.so.0.9.8      -> /usr/lib/ssl11/libssl.so.1.1      (mojomail/libpalmsocket refs)
   libcrypto.so.0.9.8   -> /usr/lib/ssl11/libcrypto.so.1.1
-  libssl_compat.so     -> /usr/lib/ssl11/libssl_compat.so
+  libssl_compat.so                             (REAL copy, shipped in the ipk -- NOT a
+                                                symlink to ssl11's; a superset adding the
+                                                two symbols the mail libs need, below)
 ```
+
+**Why mail ships its OWN `libssl_compat.so` (a real file, not a symlink to ssl11's):** the
+0.9.8-built mail libs import two symbols that are *macros* in OpenSSL 1.1 (so absent from
+`libssl.so.1.1`) and that the browser's shim doesn't carry — `CONF_modules_free`
+(`libpalmsocket`) and `SSL_CTX_get_ex_new_index` (`libemail-common`). Unresolved, the EAS
+validation worker `exit(127)`s right after `SSL_CTX_new`, before any TLS ClientHello (UI:
+"Message status unknown"). They're added to `openssl_compat_shim.c` (a harmless superset), so
+`mail-tls13` is **self-contained for the shim and never requires re-issuing `browser-tls13`**
+— it still *depends* on browser-tls13 being installed (for ssl11's OpenSSL `.so`s). The build
+needs `libssl_compat.so` built from `openssl_compat_shim.c` present at the repo root.
 
 The four `.service` `Exec=` lines get prefixed with
 `/usr/bin/env LD_LIBRARY_PATH=/usr/lib/ssl11mail LD_PRELOAD=/usr/lib/ssl11mail/libssl_compat.so CURL_CA_BUNDLE=… SSL_CERT_FILE=…`

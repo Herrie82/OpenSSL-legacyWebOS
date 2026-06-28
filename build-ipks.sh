@@ -24,12 +24,20 @@ set -euo pipefail
 # ntpdate-sync, BrowserServer.bin) and the ipks/ output are relative to it.
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 OUT="$BASE/ipks"; ARCH="armv7"
+
+# Optional package selection: ./build-ipks.sh [browser|ntp|curl|luna|mail|all ...]
+# No args -> "all" (back-compat). 'want <pkg>' gates each section, so e.g. the mail
+# package can be (re)built on a box without a clean stock device / BrowserServer.bin
+# while iterating its libcurl (see BUILDING-mail.md). 'all' also gates the blanket
+# ipk clean below so a selective rebuild won't wipe the other packages' ipks.
+WANT="${*:-all}"
+want() { case " $WANT " in *" all "*) return 0;; *" $1 "*) return 0;; *) return 1;; esac; }
 MAINT="WebOS Internals <support@webos-internals.org>"
 TLSVER="1.1.1"   # browser-tls13: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
 LUNAVER="1.0.0"  # luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13
-MAILVER="1.1.0"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1) + ssl11; needs browser-tls13 + curl-mail/ (see BUILDING-mail.md)
+MAILVER="1.2.0"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11; needs browser-tls13 installed + curl-mail/ (see BUILDING-mail.md). 1.2.0: EAS hardware-proven (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 
 LIBSSL="$BASE/openssl-1.1.1w/libssl.so.1.1"
@@ -41,11 +49,13 @@ BROWSERSERVER="$BASE/BrowserServer.bin"
 NTPSRC="$BASE/ntpdate-sync"
 
 # --- build prerequisites (fail fast, before doing any work) -------------------
+if want browser; then
 command -v patchelf >/dev/null 2>&1 || {
   echo "ERROR: 'patchelf' not found in PATH -- required to RPATH BrowserServer." >&2
   echo "       Install it (e.g. 'apt-get install patchelf', or 'brew install patchelf')." >&2
   exit 1
 }
+fi
 
 # GNU ar is REQUIRED. The pmPostInstall.script/pmPreRemove.script members have long
 # names; BSD ar (macOS /usr/bin/ar) encodes those in a format the device's ipkg/
@@ -63,7 +73,9 @@ done
 }
 
 # We need the STOCK 3.0.5 BrowserServer to RPATH. If it isn't already in the repo,
-# fetch it from a connected (factory/stock) TouchPad over novacom.
+# fetch it from a connected (factory/stock) TouchPad over novacom. Only needed when
+# actually building browser-tls13 (skipped for a mail-only / selective rebuild).
+if want browser; then
 if [ ! -f "$BROWSERSERVER" ]; then
   echo "BrowserServer.bin not present -- fetching the stock binary from a connected TouchPad..."
   command -v novacom >/dev/null 2>&1 || {
@@ -98,11 +110,14 @@ if [ ! -f "$BROWSERSERVER" ]; then
 else
   echo "Using existing BrowserServer.bin ($(md5sum "$BROWSERSERVER" | cut -d' ' -f1))"
 fi
+fi  # want browser
 # -----------------------------------------------------------------------------
 
 # Clean only our build artifacts in $OUT (the repo ipks/ dir) -- keep README.md etc.
 mkdir -p "$OUT"
-rm -f "$OUT"/*.ipk
+# Blanket-clean only for a full build; a selective rebuild keeps unselected ipks
+# (pack() removes each package's own ipk before repacking, so this is safe).
+if want all; then rm -f "$OUT"/*.ipk; fi
 rm -rf "$OUT"/_b_tls "$OUT"/_b_ntp "$OUT"/_b_curl "$OUT"/_b_luna
 T="--owner=0 --group=0 --numeric-owner --format=ustar"
 # 1x1 transparent png (icon)
@@ -110,6 +125,7 @@ PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwG
 
 pack() { # $1 builddir  $2 ipkname
   local b="$1" name="$2"
+  rm -f "$OUT/$name"   # ar rc appends to an existing archive -> always start clean
   printf '2.0\n' > "$b/debian-binary"
   ( cd "$b/control" && tar $T -czf ../control.tar.gz . )
   ( cd "$b/data"    && tar $T -czf ../data.tar.gz    . )
@@ -126,6 +142,7 @@ pack() { # $1 builddir  $2 ipkname
 }
 
 ############################# browser-tls13 #############################
+if want browser; then
 ID=org.webosinternals.browser-tls13
 B="$OUT/_b_tls"; APPDIR="$B/data/usr/palm/applications/$ID"; F="$APPDIR/files"
 mkdir -p "$B/control" "$F/ssl11"
@@ -232,8 +249,10 @@ exit 0
 EOF
 chmod 0755 "$B/control/postinst" "$B/control/prerm"
 pack "$B" "${ID}_${TLSVER}_${ARCH}.ipk"
+fi  # want browser
 
 ############################# ntpdate-sync #############################
+if want ntp; then
 ID2=org.webosinternals.ntpdate-sync
 B2="$OUT/_b_ntp"; APPDIR2="$B2/data/usr/palm/applications/$ID2"; F2="$APPDIR2/files"
 mkdir -p "$B2/control" "$F2"
@@ -286,8 +305,10 @@ exit 0
 EOF
 chmod 0755 "$B2/control/postinst" "$B2/control/prerm"
 pack "$B2" "${ID2}_${NTPVER}_${ARCH}.ipk"
+fi  # want ntp
 
 ############################# curl-tls13 #############################
+if want curl; then
 ID3=org.webosinternals.curl-tls13
 B3="$OUT/_b_curl"; APPDIR3="$B3/data/usr/palm/applications/$ID3"; F3="$APPDIR3/files"
 mkdir -p "$B3/control" "$F3/curl11"
@@ -366,8 +387,10 @@ exit 0
 EOF
 chmod 0755 "$B3/control/postinst" "$B3/control/prerm"
 pack "$B3" "${ID3}_${CURLVER}_${ARCH}.ipk"
+fi  # want curl
 
 ############################# luna-tls13 #############################
+if want luna; then
 # Routes the app WebKit host (LunaSysMgr / WebAppMgr -- where Mojo/Enyo XHR runs) at
 # /usr/lib/ssl11. No payload: the postinst edits the LunaSysMgr upstart launcher.
 # REQUIRES browser-tls13 (for /usr/lib/ssl11); REBOOT after install.
@@ -453,8 +476,10 @@ exit 0
 EOF
 chmod 0755 "$B4/control/postinst" "$B4/control/prerm"
 pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk"
+fi  # want luna
 
 ############################# mail-tls13 #############################
+if want mail; then
 # Routes the native mail transports (mojomail-eas/imap/pop/smtp -- where the Email
 # app's EAS/IMAP/POP/SMTP sync actually runs) through the OpenSSL 1.1.1w stack, so
 # the 2011 mail client can reach modern TLS 1.2/1.3 servers (Zoho, Gmail, etc.).
@@ -482,6 +507,12 @@ else
   B5="$OUT/_b_mail"; APPDIR5="$B5/data/usr/palm/applications/$ID5"; F5="$APPDIR5/files"
   rm -rf "$B5"; mkdir -p "$B5/control" "$F5/ssl11mail"
   install -m0644 "$MAILCURL" "$F5/ssl11mail/$MAILCURL_BN"
+  # mail ships its OWN libssl_compat.so (a superset of the browser's: adds CONF_modules_free
+  # + SSL_CTX_get_ex_new_index, which only the mail transports' libpalmsocket/libemail-common
+  # need). So mail-tls13 is self-contained for the shim and does NOT require browser-tls13 to
+  # be rebuilt/reinstalled -- it only needs ssl11's OpenSSL libs (still a Depends).
+  [ -f "$LIBCOMPAT" ] || { echo "ERROR: $LIBCOMPAT missing -- build the shim from openssl_compat_shim.c first" >&2; exit 1; }
+  install -m0644 "$LIBCOMPAT" "$F5/ssl11mail/libssl_compat.so"
   cat > "$APPDIR5/appinfo.json" <<EOF
 { "title":"Mail TLS 1.3", "id":"$ID5", "version":"$MAILVER", "vendor":"WebOS Internals",
   "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
@@ -537,7 +568,10 @@ ln -sf "$SSL11/libssl.so.1.1"    "$MAILDIR/libssl.so.1.1"
 ln -sf "$SSL11/libcrypto.so.1.1" "$MAILDIR/libcrypto.so.1.1"
 ln -sf "$SSL11/libssl.so.1.1"    "$MAILDIR/libssl.so.0.9.8"
 ln -sf "$SSL11/libcrypto.so.1.1" "$MAILDIR/libcrypto.so.0.9.8"
-ln -sf "$SSL11/libssl_compat.so" "$MAILDIR/libssl_compat.so"
+# OUR shim (superset with CONF_modules_free + SSL_CTX_get_ex_new_index that the mail
+# transports need) -- a real copy, NOT a symlink to ssl11's, so mail is self-contained
+# and unaffected if the installed browser-tls13 ships an older shim.
+cp -f "$SRC/ssl11mail/libssl_compat.so" "$MAILDIR/libssl_compat.so"; chmod 755 "$MAILDIR/libssl_compat.so"
 
 # 2. patch the four mojomail D-Bus launchers (idempotent; backup each once to /var/luna)
 mkdir -p /var/luna 2>/dev/null
@@ -597,5 +631,6 @@ EOF
   chmod 0755 "$B5/control/postinst" "$B5/control/prerm"
   pack "$B5" "${ID5}_${MAILVER}_${ARCH}.ipk"
 fi
+fi  # want mail
 
 echo "=== output ==="; ls -l "$OUT"/*.ipk
