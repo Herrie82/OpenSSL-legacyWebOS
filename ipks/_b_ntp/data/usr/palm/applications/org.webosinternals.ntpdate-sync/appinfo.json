@@ -1,3 +1,0 @@
-{ "title":"NTP Clock Sync", "id":"org.webosinternals.ntpdate-sync", "version":"2.0.0", "vendor":"WebOS Internals",
-  "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
-  "noWindow":true, "visible":false }
