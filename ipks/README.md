@@ -9,5 +9,15 @@ Install via **Preware** / **WebOS Quick Install** / `ipkg install`, in this orde
 
 Then **reboot once**.
 
+Optional packages — modern TLS for the stock Email app:
+
+5. `org.webosinternals.mail-tls13` — mail transports on TLS 1.2/1.3 (**requires #1**; no
+   reboot). **EAS, IMAP & SMTP all working & hardware-proven**; POP in
+   testing. Details: [BUILDING.md](../BUILDING.md).
+6. `org.webosinternals.mojomail-imap-tagfix` — **optional, standalone**: a one-byte
+   `mojomail-imap` patch so strict IMAP servers (e.g. Fastmail) accept its command tags. Only
+   needed for such servers; pairs with #5; reversible. Details:
+   [mojomail-changes.md](../mojomail-changes.md).
+
 Full details — requirements, what it does/doesn't do, verification, recovery, and how
 it works — are in the [project README](../README.md). Building: [BUILDING.md](../BUILDING.md).

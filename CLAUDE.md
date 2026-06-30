@@ -11,30 +11,55 @@ Modern TLS 1.2/1.3 (OpenSSL 1.1.1w + curl 7.88.1) for the 2011 HP TouchPad
 3. `curl-tls13` — modern `/usr/bin/curl11` + `/usr/bin/curl` (stock backed up).
 4. `ntpdate-sync` — NTP clock sync.
 
-## Mail TLS — `mail-tls13` (5th package, IN PROGRESS — not shipping yet)
+## Mail TLS — `mail-tls13` (5th package; **EAS + IMAP + SMTP all working & hardware-proven**, v1.3.0)
 Goal: the stock Email app's native transports `mojomail-{eas,imap,pop,smtp}` reach modern
-TLS so accounts like Zoho (`msync.zoho.com`, EAS, needs TLS 1.2) sync again. Full story in
-[`BUILDING-mail.md`](BUILDING-mail.md); deep notes in the `mail-tls-eas` auto-memory.
+TLS so accounts like Zoho (`msync.zoho.com`, EAS) and Fastmail (IMAP/SMTP) sync again. Full
+story in [`BUILDING.md`](BUILDING.md); deep notes in the `mail-eas-WORKING` and
+`mail-imap-smtp-WORKING` auto-memories.
+**Proven on hardware (v1.3.0):** EAS (Zoho: Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy)
+AND IMAP+SMTP (Fastmail, TLS 1.3) all validate + sync.
 - **Architecture:** `com.palm.app.email` is just UI → delegates to `palm://com.palm.eas/`
   etc. TLS happens in the native transports: **EAS via libcurl** (`libemail-common`'s
-  `glibcurl`, multi interface), **IMAP/POP/SMTP via `libpalmsocket`** (direct OpenSSL,
-  `SSLv23_method`). Launchers are the four D-Bus `*.service` files in
-  `/usr/share/dbus-1/system-services/`; reload edits with **`ls-control scan-services`**
-  (no UI bounce). Backups go in `/var/luna` (never `/etc/event.d`).
-- **Two dead ends proven on hardware** (don't repeat): (a) pointing mojomail at ssl11's
-  libcurl 7.88.1 → SIGSEGV in `curl_multi_remove_handle` (mojomail's glibcurl was built
-  for curl 7.21.7+c-ares); (b) keeping STOCK libcurl 7.21.7 on ssl11 OpenSSL → TLS 1.3
-  handshake succeeds then SIGSEGV inspecting the X509 cert (ssl11 OpenSSL only carries
-  libWebKitLuna's partial offset relocation, not libcurl's).
-- **The fix:** ship a purpose-built **libcurl ~7.51–7.61, `--enable-ares`, compiled against
-  OpenSSL 1.1 headers** (so no offset assumptions) into `/usr/lib/ssl11mail` and point the
-  four launchers there. `build-ipks.sh` already builds this package **if** the cross-built
-  lib is at `curl-mail/lib/.libs/libcurl.so.4.*` (else it SKIPs). Validate with
-  `mail-tls13-diag.sh` on a TEST tablet; iterate curl version if needed. IMAP/POP/SMTP
-  (libpalmsocket) is a separate validation — may also need wider OpenSSL offset relocation.
-- **Build host:** needs the PalmPDK ARM cross-gcc. The Mac copy at `/opt/PalmPDK` is
-  **i386 → cannot run on Apple Silicon** (`bad CPU type`); build on a **Linux** box. The
-  device binaries for offline RE are in `analysis/device/` (gitignored).
+  `glibcurl`, multi interface; its `CurlSSLVerifier` adds a verify callback but sets NO CA
+  path — it trusts **libcurl's built-in default bundle**), **IMAP/POP/SMTP via `libpalmsocket`**
+  (direct OpenSSL, `SSLv23_method`; loads `/var/ssl/certs` + `set_default_verify_paths`).
+  Launchers are the four D-Bus `*.service` files in `/usr/share/dbus-1/system-services/`;
+  reload edits with **`ls-control scan-services`** (no UI bounce). Backups go in `/var/luna`.
+- **Two dead ends proven on hardware** (don't repeat): (a) ssl11's libcurl 7.88.1 → SIGSEGV
+  in `curl_multi_remove_handle` (glibcurl was built for curl 7.21.7+c-ares); (b) STOCK libcurl
+  7.21.7 on ssl11 OpenSSL → TLS 1.3 ok then SIGSEGV inspecting the X509 cert.
+- **The working fix (EAS, v1.2.0):** ship into `/usr/lib/ssl11mail` (and point the four
+  launchers there): (1) a purpose-built **libcurl 7.61.1** `--enable-ares`, compiled vs
+  OpenSSL 1.1 headers, **and `--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt`** (libcurl
+  ignores the `CURL_CA_BUNDLE` *env* — only the curl CLI reads it — so the bundle MUST be
+  baked in or EAS certs read as untrusted); (2) mail's **OWN `libssl_compat.so`** (a real
+  file, NOT a symlink to ssl11's) — a superset adding **`CONF_modules_free`** (libpalmsocket)
+  and **`SSL_CTX_get_ex_new_index`** (libemail-common), both 1.1 macros that the 0.9.8-built
+  mail libs import as functions; unresolved → `exit(127)` after `SSL_CTX_new`, before any
+  ClientHello. So mail-tls13 is **self-contained for the shim and never requires re-issuing
+  browser-tls13** (it still *depends* on browser-tls13 being installed for ssl11's OpenSSL).
+- **IMAP/SMTP fixes, both NON-TLS — the TLS layer was already fine** (libpalmsocket's CA store
+  = `/var/ssl/certs` + `set_default_verify_paths` honoring the launcher's `SSL_CERT_FILE`
+  verifies modern certs fine):
+  - **(a) `LD_BIND_NOW=1`** on all four launchers (in `mail-tls13` v1.3.x) — with lazy binding
+    the transports intermittently SIGSEGV in the glibc-2.8 dynamic linker
+    (`do_lookup_x`/`check_match`) while first-resolving a PLT symbol across the shim + 0.9.8→1.1
+    aliased OpenSSL (hit on SMTP); eager binding fixes it. (A launch-env change, not a mojomail
+    binary change.)
+  - **(b) mojomail-imap 1-byte patch** `~A`→`AA` (0x7e→0x41 at file offset **991784**): mojomail
+    hard-codes a `~`-leading IMAP tag (`ImapRequestManager: ss << "~A" << id`), which strict
+    servers (Fastmail) reject with an UNTAGGED `* BAD` that mojomail can't match → 30s hang
+    (err 3099). **Shipped as a SEPARATE, optional package `org.webosinternals.mojomail-imap-tagfix`**
+    (split out of mail-tls13 so it's take-or-leave and won't collide with other mojomail
+    patches — it modifies a stock binary). Its postinst md5-guards the stock binary
+    (`9f6489…`→`78956f…`), patches a same-fs temp copy + `mv` (in-place `dd` fails ETXTBSY on
+    the running binary), backs up to `/var/luna/mojomail-imap.tagfix-orig`; prerm restores. The
+    one and only mojomail-binary change — see `mojomail-changes.md`.
+- **Build needs** `curl-mail/lib/.libs/libcurl.so.4.*` AND `libssl_compat.so` (build the shim
+  from `openssl_compat_shim.c`); else mail is SKIPped/errors. Validate with `mail-tls13-diag.sh`.
+- **Build host:** needs the PalmPDK ARM cross-gcc (`/opt/PalmPDK/arm-gcc`, gcc-4.3.3, i386 →
+  **Linux box only**, not Apple Silicon). Device binaries for offline RE in `analysis/device/`
+  (gitignored) — they're **not stripped**, so `objdump`/`nm` give named functions.
 
 ## Commands
 - Build: `./build-ipks.sh` → `ipks/` (needs `patchelf`, **GNU ar**, and `BrowserServer.bin` — auto-fetched over novacom from a connected stock device).

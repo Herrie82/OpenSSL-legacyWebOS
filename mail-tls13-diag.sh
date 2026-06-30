@@ -23,15 +23,18 @@ else
     bad "$SSL11 stack missing -- install org.webosinternals.browser-tls13 first"
 fi
 
-say "=== 2. libcurl-free redirect dir $MAILDIR ==="
+say "=== 2. libcurl redirect dir $MAILDIR ==="
+# Current design (see BUILDING.md): ssl11mail ships a purpose-built libcurl
+# (~7.51-7.61, compiled vs OpenSSL 1.1 headers) PLUS the ssl11 OpenSSL sonames it
+# NEEDs and the 0.9.8 aliases the other mojomail consumers reference.
 if [ -d "$MAILDIR" ]; then
     for l in libssl.so.0.9.8 libcrypto.so.0.9.8 libssl.so.1.1 libcrypto.so.1.1 libssl_compat.so; do
         [ -e "$MAILDIR/$l" ] && ok "$l -> $(readlink "$MAILDIR/$l" 2>/dev/null)" || bad "missing $MAILDIR/$l"
     done
-    if [ -e "$MAILDIR/libcurl.so.4" ] || [ -e "$MAILDIR/libcurl.so.4.8.0" ]; then
-        bad "$MAILDIR contains libcurl -- it must NOT (would shadow stock 7.21.7 and crash)"
+    if [ -e "$MAILDIR/libcurl.so.4" ]; then
+        ok "libcurl.so.4 -> $(readlink "$MAILDIR/libcurl.so.4" 2>/dev/null) (purpose-built vs OpenSSL 1.1)"
     else
-        ok "no libcurl in $MAILDIR (stock libcurl 7.21.7 stays)"
+        bad "$MAILDIR has no libcurl.so.4 -- mail-tls13 payload missing"
     fi
 else
     bad "$MAILDIR missing -- mail-tls13 not installed"
@@ -45,15 +48,15 @@ for s in eas imap pop smtp; do
     else say "  --    com.palm.$s.service NOT patched"; fi
 done
 
-say "=== 4. loader resolves mojomail-eas to ssl11 openssl + STOCK libcurl ==="
+say "=== 4. loader resolves mojomail-eas to ssl11 openssl + OUR ssl11mail libcurl ==="
 if [ -x /usr/bin/mojomail-eas ]; then
     LD_LIBRARY_PATH=$MAILDIR LD_PRELOAD=$MAILDIR/libssl_compat.so ldd /usr/bin/mojomail-eas 2>&1 \
       | grep -iE "libssl|libcrypto|libcurl|compat|not found" | sed 's/^/    /'
     nf=$(LD_LIBRARY_PATH=$MAILDIR LD_PRELOAD=$MAILDIR/libssl_compat.so ldd /usr/bin/mojomail-eas 2>&1 | grep -c "not found")
     [ "$nf" = 0 ] && ok "no unresolved symbols/libs" || bad "$nf unresolved -- shim/openssl gap"
     LD_LIBRARY_PATH=$MAILDIR LD_PRELOAD=$MAILDIR/libssl_compat.so ldd /usr/bin/mojomail-eas 2>&1 \
-      | grep -q "libcurl.* /usr/lib/libcurl" && ok "libcurl resolves to STOCK /usr/lib" \
-      || bad "libcurl is NOT the stock one -- crash risk"
+      | grep -q "libcurl.* $MAILDIR" && ok "libcurl resolves to OUR $MAILDIR build" \
+      || bad "libcurl does NOT resolve to $MAILDIR -- launcher LD_LIBRARY_PATH not in effect"
 fi
 
 if [ "$MODE" = "status" ]; then
@@ -92,7 +95,7 @@ if echo "$ERRFIELD" | grep -q '"error":null'; then ok "account error is null aft
 
 echo
 if [ "$PASS" = 1 ] && [ "$CRASH" = 0 ]; then
-    echo "VERDICT: PASS -- mojomail-eas ran on ssl11 OpenSSL with stock libcurl, no crash, no cert error."
+    echo "VERDICT: PASS -- mojomail-eas ran on ssl11 OpenSSL with our ssl11mail libcurl, no crash, no cert error."
 else
     echo "VERDICT: FAIL -- see FAIL lines above. Recover: remove mail-tls13 (prerm restores launchers), or:"
     echo "  for s in eas imap pop smtp; do cp -f /var/luna/com.palm.\$s.service.tls13-orig /usr/share/dbus-1/system-services/com.palm.\$s.service; done; /usr/bin/ls-control scan-services; killall mojomail-eas mojomail-imap mojomail-pop mojomail-smtp"
