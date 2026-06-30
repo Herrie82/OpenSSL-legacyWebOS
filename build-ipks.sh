@@ -33,7 +33,7 @@ OUT="$BASE/ipks"; ARCH="armv7"
 WANT="${*:-all}"
 want() { case " $WANT " in *" all "*) return 0;; *" $1 "*) return 0;; *) return 1;; esac; }
 MAINT="WebOS Internals <support@webos-internals.org>"
-TLSVER="1.1.1"   # browser-tls13: app-layout + robust backup / safe teardown
+TLSVER="1.1.2"   # browser-tls13: 1.1.2 ssl11 OpenSSL rebuilt with ARM NEON bulk crypto (bsaes AES / sha-neon / poly1305-neon / ChaCha20) on top of the existing ecp_nistz256+bn_mul_mont handshake asm -- see build-openssl.sh; still 1.1.1w, ABI 0x5000002 unchanged. 1.1.1: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
 LUNAVER="1.0.0"  # luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13
