@@ -36,7 +36,7 @@ MAINT="WebOS Internals <support@webos-internals.org>"
 TLSVER="1.1.2"   # browser-tls13: 1.1.2 ssl11 OpenSSL rebuilt with ARM NEON bulk crypto (bsaes AES / sha-neon / poly1305-neon / ChaCha20) on top of the existing ecp_nistz256+bn_mul_mont handshake asm -- see build-openssl.sh; still 1.1.1w, ABI 0x5000002 unchanged. 1.1.1: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
-LUNAVER="1.1.1"  # luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
+LUNAVER="1.1.2"  # luna-tls13: 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
 MAILVER="1.3.1"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
@@ -416,6 +416,22 @@ else
     exit 1
 fi
 chmod 0644 "$F4/media-pipeline.wrap"
+# setcpushares-pdk env-scrub wrapper payload: same compile-or-prebuilt strategy as
+# the media wrapper above (PDK-app launch fix -- see the postinst block).
+SPWRAP_SRC="$BASE/setcpushares-pdk-wrap.c"
+SPWRAP_BIN="$BASE/setcpushares-pdk-wrap.bin"
+if [ -x "$CROSSGCC" ] && [ -f "$SPWRAP_SRC" ]; then
+    "$CROSSGCC" -static -Os -o "$F4/setcpushares-pdk.wrap" "$SPWRAP_SRC"
+    "${CROSSGCC%gcc}strip" "$F4/setcpushares-pdk.wrap" 2>/dev/null || true
+    echo "  luna: compiled setcpushares-pdk wrapper from source"
+elif [ -f "$SPWRAP_BIN" ]; then
+    cp -f "$SPWRAP_BIN" "$F4/setcpushares-pdk.wrap"
+    echo "  luna: using prebuilt setcpushares-pdk wrapper"
+else
+    echo "ERROR: no setcpushares-pdk wrapper -- need $SPWRAP_SRC + PalmPDK gcc, or prebuilt $SPWRAP_BIN" >&2
+    exit 1
+fi
+chmod 0644 "$F4/setcpushares-pdk.wrap"
 cat > "$APPDIR4/appinfo.json" <<EOF
 { "title":"Luna TLS 1.3", "id":"$ID4", "version":"$LUNAVER", "vendor":"WebOS Internals",
   "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
@@ -433,7 +449,7 @@ Description: Modern TLS 1.2/1.3 for webOS apps (Mojo/Enyo WebKit)
 Section: System
 Priority: optional
 Depends:
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Luna TLS 1.3", "FullDescription":"Routes the app WebKit host (LunaSysMgr/WebAppMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. Also installs a tiny wrapper at /usr/bin/media-pipeline that keeps the ssl11 stack out of the HTML5 media worker (which never needed it), so streaming and local media (Pandora/Plex/drPodder and stock Music) play reliably instead of wedging after one track. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot.", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Luna TLS 1.3", "FullDescription":"Routes the app WebKit host (LunaSysMgr/WebAppMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. Also installs a tiny wrapper at /usr/bin/media-pipeline that keeps the ssl11 stack out of the HTML5 media worker (which never needed it), so streaming and local media (Pandora/Plex/drPodder and stock Music) play reliably instead of wedging after one track. Also installs a tiny wrapper at /usr/sbin/setcpushares-pdk that keeps the ssl11 launcher env (LD_BIND_NOW, compat-shim preload) out of PDK app launches, so PDK apps -- incl. QupZilla and the nizovn Qt5 stack -- launch normally, including under LunaCE. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot.", "License":"OpenSSL/curl" }
 EOF
 
 # postinst: patch the LunaSysMgr launcher to load ssl11 (+ compat shim). Backup goes
@@ -503,6 +519,49 @@ fi
 /usr/bin/ls-control scan-services 2>/dev/null || true
 # ---- end media-pipeline fix --------------------------------------------------
 
+# ---- setcpushares-pdk env-scrub wrapper (INDEPENDENT of the launcher patch) ----
+# Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and
+# inherits the ssl11 launcher env. Under LunaCE the leaked LD_BIND_NOW=1 is fatal:
+# LunaCE's PDK child env preloads libpvrtc.so (lazily-unresolved NApp_* symbols),
+# eager binding turns those into load errors, /bin/sh dies at exec (exit 127) and
+# the app NEVER STARTS (hit: QupZilla / the whole nizovn Qt5-glibc stack). Under
+# stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps.
+# Fix: install a STATIC wrapper AS setcpushares-pdk (stock script moved to .real)
+# that strips ONLY the tls13 additions -- LD_BIND_NOW, the libssl_compat.so
+# preload entry, the /usr/lib/ssl11 library path -- and execs the real script,
+# preserving whatever child env the (stock or LunaCE) sysmgr intended. Static
+# because a shell scrub can't run when the env kills /bin/sh itself. This block
+# runs BEFORE the launcher "already patched" short-circuit below so existing
+# 1.1.0/1.1.1 installs get it on upgrade. Detection keys on the .real FILE.
+SP=/usr/sbin/setcpushares-pdk
+SPW=""
+for R in "$IPKG_OFFLINE_ROOT" /media/cryptofs/apps /var ""; do
+    f="$R/usr/palm/applications/$PID/files/setcpushares-pdk.wrap"
+    [ -f "$f" ] && { SPW="$f"; break; }
+done
+if [ -z "$SPW" ]; then
+    echo "luna-tls13 WARNING: setcpushares-pdk wrapper payload not found -- PDK launch fix NOT applied."
+elif [ ! -f "$SP" ]; then
+    echo "luna-tls13 NOTE: $SP not present -- skipping PDK launch fix."
+elif [ -f "$SP.real" ]; then
+    cp -f "$SPW" "$SP"; chmod 755 "$SP"          # already wrapped: refresh, keep .real intact
+    echo "luna-tls13: setcpushares-pdk wrapper already installed (refreshed)."
+elif head -n 1 "$SP" 2>/dev/null | grep -q '^#!'; then
+    mkdir -p /var/luna 2>/dev/null
+    [ -f /var/luna/setcpushares-pdk.tls13-orig ] || cp -p "$SP" /var/luna/setcpushares-pdk.tls13-orig
+    mv -f "$SP" "$SP.real"
+    cp -f "$SPW" "$SP"; chmod 755 "$SP"
+    if [ -s "$SP" ] && [ -f "$SP.real" ]; then
+        echo "luna-tls13: installed setcpushares-pdk env-scrub wrapper (PDK apps launch clean)."
+    else
+        echo "luna-tls13 ERROR: setcpushares-pdk wrapper install failed -- restoring stock script."
+        mv -f "$SP.real" "$SP" 2>/dev/null
+    fi
+else
+    echo "luna-tls13 WARNING: $SP has no shebang and no .real exists -- looks like a stray wrapper, not the stock script. NOT wrapping."
+fi
+# ---- end setcpushares-pdk fix --------------------------------------------------
+
 # ---- LunaSysMgr launcher: route app WebKit through ssl11 (unchanged from 1.1.0) --
 if grep -q 'ssl11/libssl_compat.so' "$L" 2>/dev/null && grep -q 'LD_BIND_NOW=1' "$L" 2>/dev/null; then
     echo "luna-tls13: LunaSysMgr launcher already patched (ssl11 + LD_BIND_NOW). REBOOT to activate the media fix if you have not rebooted since this install."
@@ -558,6 +617,15 @@ rm -f /var/luna/media-pipeline.stock-orig
 rm -f /usr/share/ls2/roles/prv/com.palm.mediad.pipeline.real.json \
       /usr/share/ls2/roles/pub/com.palm.mediad.pipeline.real.json
 /usr/bin/ls-control scan-services 2>/dev/null || true
+
+# restore setcpushares-pdk: move the stock script back over the wrapper.
+SP=/usr/sbin/setcpushares-pdk
+if [ -f "$SP.real" ]; then
+    mv -f "$SP.real" "$SP"
+elif [ -f /var/luna/setcpushares-pdk.tls13-orig ]; then
+    cp -f /var/luna/setcpushares-pdk.tls13-orig "$SP"; chmod 755 "$SP"
+fi
+rm -f /var/luna/setcpushares-pdk.tls13-orig
 
 if [ -f /var/luna/LunaSysMgr.tls13-orig ]; then
     cp -f /var/luna/LunaSysMgr.tls13-orig "$L"
