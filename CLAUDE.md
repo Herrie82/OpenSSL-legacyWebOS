@@ -5,6 +5,12 @@ Modern TLS 1.2/1.3 (OpenSSL 1.1.1w + curl 7.88.1) for the 2011 HP TouchPad
 `/usr/lib/ssl11` and wire the browser, the apps, and the CLI into it. Full story:
 [`README.md`](README.md). Build/maintainer details: [`BUILDING.md`](BUILDING.md).
 
+## Status — media fix (luna-tls13 1.1.1, `edbe184`)
+- **DONE & fleet-validated.** The `media-pipeline` env-scrub wrapper (Key-facts bullet below; `media-player-gap-findings` memory) fixes media (Pandora/Plex/drPodder + stock Music) wedging after ~1 song under the TLS stack. Committed to `main` @ **`edbe184`** — **not pushed; the maintainer opens the PR** to Herrie82 (Claude does not push).
+- **Validated A–E on hardware:** upgrades from 1.0.0 and 1.1.0, nizovn and no-nizovn, fresh full install, and a faithful Preware uninstall-to-stock (1.1.1 prerm reversibility). All webOS 3.0.5.
+- **Hard prereq surfaced by the fresh-install test — `ntpdate-sync` (#4):** a freshly-doctored device boots with its clock in the *past*, so every modern cert reads "not yet valid" and the whole TLS stack *looks* broken (HTTPS dead everywhere, "cert not trusted") when it's actually fine. webOS's built-in NTP hits dead palm.com and fails, so the clock never self-corrects — ntpdate-sync is REQUIRED, not optional. (Same family as the CA-bundle gotcha below.)
+- **Known limit:** the media worker streams HTTPS via `souphttpsrc`→`libsoup`→**gnutls** (never our OpenSSL), capped by the ~2011 stock gnutls (no TLS 1.3). A strictly-TLS-1.3-only media CDN would fail to *stream* — pre-existing, not the wrapper's doing; control-plane HTTPS (playlists/tokens in the app WebKit) already uses our modern TLS. Fix if ever needed: modernize gnutls/glib-networking for the worker.
+
 ## The four packages (install order)
 1. `browser-tls13` — RPATH'd `/usr/bin/BrowserServer` → stock browser on TLS 1.3. **Ships `/usr/lib/ssl11`; install first.**
 2. `luna-tls13` — patches the `LunaSysMgr` upstart launcher → app WebKit (Mojo/Enyo XHR) on TLS 1.3, **+ a `media-pipeline` env-scrub wrapper (v1.1.1) so HTML5 *and* local media play reliably** (see Key facts). **Needs #1; reboot after.**
