@@ -37,7 +37,7 @@ TLSVER="1.1.2"   # browser-tls13: 1.1.2 ssl11 OpenSSL rebuilt with ARM NEON bulk
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
 LUNAVER="1.1.2"  # luna-tls13: 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
-MAILVER="1.3.1"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
+MAILVER="1.3.2"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.2: Gmail (and any ECDSA-leaf server) IMAP/POP fix -- libpalmsocket (0.9.8-built, on 1.1 via our shim) mis-verifies ECDSA leaf certs as "self signed" (X509_V_ERR=18 -> err 4010); ship /usr/lib/ssl11mail/mailssl.cnf + inject OPENSSL_CONF into the imap/pop/smtp launchers to force TLS 1.2 + RSA cert (keeps full validation; eas untouched -- it verifies via libcurl). Upgrade-safe: injects OPENSSL_CONF even on launchers a prior mail-tls13 already patched. 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
 
@@ -699,7 +699,7 @@ Description: Modern TLS 1.2/1.3 for the webOS mail client (EAS/IMAP/POP/SMTP)
 Section: System
 Priority: optional
 Depends: org.webosinternals.browser-tls13
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Mail TLS 1.3", "FullDescription":"Routes the native mail transports (mojomail-eas/imap/pop/smtp) through a purpose-built libcurl (compiled against OpenSSL 1.1.1w) under /usr/lib/ssl11mail, so the stock Email app can sync Exchange ActiveSync/IMAP/POP/SMTP accounts on modern TLS 1.2/1.3 servers (Zoho, Gmail, etc.). Patches the four D-Bus service launchers (backups in /var/luna). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11) and a current /etc/ssl/certs/ca-certificates.crt. No reboot needed.", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Mail TLS 1.3", "FullDescription":"Routes the native mail transports (mojomail-eas/imap/pop/smtp) through a purpose-built libcurl (compiled against OpenSSL 1.1.1w) under /usr/lib/ssl11mail, so the stock Email app can sync Exchange ActiveSync/IMAP/POP/SMTP accounts on modern TLS 1.2/1.3 servers (Zoho, Gmail, etc.). Patches the four D-Bus service launchers (backups in /var/luna). v1.3.2 also fixes Gmail (and any ECDSA-certificate) IMAP/POP sign-in that previously failed with a false 'certificate is not trusted' (error 4010): the stock libpalmsocket mis-verifies ECDSA leaf certs, so the imap/pop/smtp launchers now pin TLS 1.2 + an RSA server certificate (full certificate validation is preserved). Note Gmail requires a Google App Password for IMAP. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11) and a current /etc/ssl/certs/ca-certificates.crt. No reboot needed.", "License":"OpenSSL/curl" }
 EOF
 
   # postinst: build the OpenSSL-1.1 redirect dir with OUR libcurl + patch the four
@@ -769,6 +769,41 @@ for s in eas imap pop smtp; do
 done
 echo "mail-tls13: patched $patched / 4 mojomail launcher(s)."
 
+# 2b. Gmail / ECDSA-leaf fix (1.3.2). libpalmsocket (stock 0.9.8-built, run on 1.1.1w via our
+#     shim) mis-verifies ECDSA (P-256) LEAF certs -- OpenSSL declares the leaf "self signed"
+#     (X509_V_ERR=18) at depth 0 and never links it, so IMAP/POP/SMTP validation fails with
+#     err 4010. RSA leaves verify fine (full chain). Google's imap./pop.gmail.com serve ECDSA
+#     leaves by default, hence Gmail IMAP/POP break while Fastmail (RSA) works. Fix: an OpenSSL
+#     system_default config that forces these transports to TLS 1.2 + an RSA cert -- this KEEPS
+#     full certificate validation. Applied to imap/pop/smtp only (NOT eas: EAS verifies via
+#     libcurl/CurlSSLVerifier, which has no bug -- leave it on TLS 1.3). Both settings are
+#     required: under TLS 1.3 Google still serves ECDSA, and libpalmsocket overrides any
+#     CipherString (but honors MaxProtocol + SignatureAlgorithms). This step is INDEPENDENT of
+#     the ssl11mail-prefix check above (which 'continue's over already-patched launchers on
+#     upgrade), so an upgrade from <=1.3.1 still gets OPENSSL_CONF injected.
+cat > "$MAILDIR/mailssl.cnf" <<'CNF'
+openssl_conf = openssl_init
+[openssl_init]
+ssl_conf = ssl_sect
+[ssl_sect]
+system_default = system_default_sect
+[system_default_sect]
+MaxProtocol = TLSv1.2
+SignatureAlgorithms = RSA+SHA256:RSA+SHA384:RSA+SHA512
+CNF
+chmod 0644 "$MAILDIR/mailssl.cnf"
+ecdsa=0
+for s in imap pop smtp; do
+    F="/usr/share/dbus-1/system-services/com.palm.$s.service"
+    [ -f "$F" ] || continue
+    grep -q 'OPENSSL_CONF=' "$F" 2>/dev/null && { ecdsa=$((ecdsa+1)); continue; }   # idempotent
+    grep -q 'LD_BIND_NOW=1' "$F" 2>/dev/null || continue   # only touch our env-prefixed launchers
+    awk '/^Exec=\/usr\/bin\/env / && $0 !~ /OPENSSL_CONF=/ { sub(/LD_BIND_NOW=1 /, "LD_BIND_NOW=1 OPENSSL_CONF=/usr/lib/ssl11mail/mailssl.cnf "); print; next } { print }' "$F" > "/tmp/mailc.$s.$$" && cat "/tmp/mailc.$s.$$" > "$F"
+    rm -f "/tmp/mailc.$s.$$"
+    if grep -q 'OPENSSL_CONF=' "$F" 2>/dev/null; then ecdsa=$((ecdsa+1)); else echo "mail-tls13 WARNING: could not add OPENSSL_CONF to $F"; fi
+done
+echo "mail-tls13: ECDSA/Gmail TLS-1.2+RSA config on $ecdsa / 3 (imap/pop/smtp) launcher(s)."
+
 # NOTE: the one-byte mojomail-imap "~A"->"AA" IMAP-tag patch (needed only for strict servers
 # like Fastmail that reject '~'-leading tags) is a SEPARATE, optional package --
 # org.webosinternals.mojomail-imap-tagfix -- so it can be taken or left independently of this
@@ -795,8 +830,9 @@ for s in eas imap pop smtp; do
     if [ -f "$B" ]; then
         cp -f "$B" "$F"; rm -f "$B"
     else
-        # no backup -- strip our 6-token env prefix in place (env + 5 VAR= tokens)
-        awk '/^Exec=\/usr\/bin\/env .*mojomail-/ { sub(/^Exec=\/usr\/bin\/env [^ ]* [^ ]* [^ ]* [^ ]* [^ ]* /, "Exec="); print; next } { print }' "$F" > "/tmp/mailu.$s.$$" && cat "/tmp/mailu.$s.$$" > "$F"
+        # no backup -- strip our whole env prefix in place: 'env ' + every leading VAR=value
+        # token (count varies: eas has 5, imap/pop/smtp have 6 incl. OPENSSL_CONF from 1.3.2)
+        awk '/^Exec=\/usr\/bin\/env .*mojomail-/ { sub(/^Exec=\/usr\/bin\/env ([A-Za-z_]+=[^ ]* )+/, "Exec="); print; next } { print }' "$F" > "/tmp/mailu.$s.$$" && cat "/tmp/mailu.$s.$$" > "$F"
         rm -f "/tmp/mailu.$s.$$"
     fi
 done

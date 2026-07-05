@@ -25,9 +25,9 @@ the rest of the 2011 OS untouched.
 - ✅ **A modern command-line `curl`** (7.88.1) — installed as both `curl11` and
   `curl` (the stock 0.9.8 binary is backed up and restored on removal).
 - ✅ **Modern TLS for the stock Email app** (optional `mail-tls13` package) — the
-  native mail transports reach TLS 1.2/1.3 servers. **Exchange ActiveSync (EAS) is
-  working and hardware-proven** (e.g. Zoho — Mail/Contacts/Calendar/Tasks sync
-  directly, no proxy); IMAP/POP/SMTP are in testing.
+  native mail transports reach TLS 1.2/1.3 servers. **EAS, IMAP, POP & SMTP are all
+  working and hardware-proven** (Zoho EAS — Mail/Contacts/Calendar/Tasks sync directly,
+  no proxy; Fastmail IMAP/SMTP; Gmail IMAP/POP/SMTP). Gmail needs a Google App Password.
 - ✅ **Validates current certificates** against an up-to-date Mozilla CA bundle.
 - ✅ **gzip/deflate** decoding (curl built with zlib) — required for most sites.
 - ✅ **Process-private & reboot-proof.** The modern stack lives in `/usr/lib/ssl11`
@@ -98,7 +98,7 @@ Install**, **App Catalog**, or `ipkg install`. **Install in this order:**
 | 2 | `org.webosinternals.luna-tls13` | Patches the `LunaSysMgr` upstart launcher to load `/usr/lib/ssl11`, moving app WebKit onto modern TLS. **v1.1.1 also installs a `media-pipeline` env-scrub wrapper so streaming *and* local media (Pandora/Plex/drPodder and stock Music) play reliably** — the media worker inherited the ssl11 stack it never needed, which wedged playback after one track. **v1.1.2 adds a `setcpushares-pdk` env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5 stack) launch again** — the launcher's `LD_BIND_NOW=1` leaked into every PDK launch and is fatal under LunaCE (its `libpvrtc.so` preload has lazily-unresolved symbols; eager binding kills `/bin/sh` at exec, exit 127), and the leaked compat-shim preload crashes nizovn-glibc apps under stock Luna. Installs cleanly on top of 1.0.0/1.1.0/1.1.1. **Requires #1; reboot after.** |
 | 3 | `org.webosinternals.curl-tls13` | Modern command-line curl as `/usr/bin/curl11` and `/usr/bin/curl`. Standalone. |
 | 4 | `org.webosinternals.ntpdate-sync` | Upstart job: public NTP at boot (retry-until-success) and every 6 h. Standalone. |
-| 5 | `org.webosinternals.mail-tls13` | **Optional.** Routes the stock Email app's native transports through OpenSSL 1.1.1w via a purpose-built libcurl + its own compat shim in `/usr/lib/ssl11mail`. **EAS, IMAP & SMTP all working & hardware-proven** (Zoho EAS; Fastmail IMAP/SMTP). **Requires #1 installed** (for `/usr/lib/ssl11`); no reboot needed. See [BUILDING.md](BUILDING.md). |
+| 5 | `org.webosinternals.mail-tls13` | **Optional.** Routes the stock Email app's native transports through OpenSSL 1.1.1w via a purpose-built libcurl + its own compat shim in `/usr/lib/ssl11mail`. **EAS, IMAP, POP & SMTP all working & hardware-proven** (Zoho EAS; Fastmail IMAP/SMTP; Gmail IMAP/POP/SMTP — needs a Google App Password). **Requires #1 installed** (for `/usr/lib/ssl11`); no reboot needed. See [BUILDING.md](BUILDING.md). |
 | 6 | `org.webosinternals.mojomail-imap-tagfix` | **Optional, standalone.** A one-byte patch to `mojomail-imap` so **strict IMAP servers (e.g. Fastmail) accept its command tags** (stock mojomail uses a `~`-prefixed tag some servers reject, hanging IMAP validation). Only needed for such servers; pairs with #5. Independent — take it or leave it. Reversible (restored on removal). See [mojomail-changes.md](mojomail-changes.md). |
 
 After installing, **reboot once** (`browser-tls13` self-restarts the browser, but

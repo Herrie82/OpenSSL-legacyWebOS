@@ -74,9 +74,23 @@ to the official feed.
 
 Routes the native mail transports (`mojomail-eas` / `-imap` / `-pop` / `-smtp`) through the
 OpenSSL 1.1.1w stack so the stock Email app syncs Exchange ActiveSync / IMAP / POP / SMTP
-accounts on modern TLS 1.2/1.3 servers. **Hardware-proven (v1.3.0):** EAS (Zoho —
-Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy) and IMAP+SMTP (Fastmail, TLS 1.3) all
-validate and sync.
+accounts on modern TLS 1.2/1.3 servers. **Hardware-proven (v1.3.2):** EAS (Zoho —
+Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy), IMAP+SMTP (Fastmail, TLS 1.3), and Gmail
+IMAP/POP/SMTP (TLS 1.2 — see below) all validate and sync.
+
+**v1.3.2 — Gmail / ECDSA-leaf fix.** `libpalmsocket` (the stock IMAP/POP/SMTP TLS library,
+0.9.8-built, run on 1.1.1w via our shim) **mis-verifies ECDSA (P-256) leaf certificates** —
+it declares the leaf "self signed" (`X509_V_ERR=18`) at depth 0 and never links it, so
+validation fails with **error 4010 "self signed certificate."** RSA leaves verify fine.
+Google's `imap.`/`pop.gmail.com` serve ECDSA leaves by default (Fastmail serves RSA, hence it
+always worked). The fix is **config-only and keeps full certificate validation:** the postinst
+ships `/usr/lib/ssl11mail/mailssl.cnf` (`[system_default]` → `MaxProtocol=TLSv1.2` +
+`SignatureAlgorithms=RSA+SHA256:RSA+SHA384:RSA+SHA512`) and adds `OPENSSL_CONF=…mailssl.cnf`
+to the **imap/pop/smtp** launchers (not `eas`, which verifies via libcurl and has no bug),
+forcing an RSA server cert. The `OPENSSL_CONF` injection is a step *independent* of the
+existing "already patched?" check, so **upgrades from ≤1.3.1 are safe** (their launchers are
+already env-prefixed but still get `OPENSSL_CONF`). Removal (prerm) reverts all launchers to
+stock. Note: Gmail also requires a **Google App Password** for IMAP (unrelated to TLS).
 
 Unlike the other four packages, mail-tls13 needs **one cross-compiled artifact**: a
 purpose-built `libcurl` (already committed at `curl-mail/lib/.libs/libcurl.so.4.5.0`, so you

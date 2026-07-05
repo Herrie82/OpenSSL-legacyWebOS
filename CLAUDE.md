@@ -22,13 +22,13 @@ Modern TLS 1.2/1.3 (OpenSSL 1.1.1w + curl 7.88.1) for the 2011 HP TouchPad
 3. `curl-tls13` — modern `/usr/bin/curl11` + `/usr/bin/curl` (stock backed up).
 4. `ntpdate-sync` — NTP clock sync.
 
-## Mail TLS — `mail-tls13` (5th package; **EAS + IMAP + SMTP all working & hardware-proven**, v1.3.0)
+## Mail TLS — `mail-tls13` (5th package; **EAS + IMAP + SMTP all working & hardware-proven**, v1.3.2)
 Goal: the stock Email app's native transports `mojomail-{eas,imap,pop,smtp}` reach modern
-TLS so accounts like Zoho (`msync.zoho.com`, EAS) and Fastmail (IMAP/SMTP) sync again. Full
-story in [`BUILDING.md`](BUILDING.md); deep notes in the `mail-eas-WORKING` and
-`mail-imap-smtp-WORKING` auto-memories.
-**Proven on hardware (v1.3.0):** EAS (Zoho: Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy)
-AND IMAP+SMTP (Fastmail, TLS 1.3) all validate + sync.
+TLS so accounts like Zoho (`msync.zoho.com`, EAS), Fastmail (IMAP/SMTP), and Gmail sync again. Full
+story in [`BUILDING.md`](BUILDING.md); deep notes in the `mail-eas-WORKING`,
+`mail-imap-smtp-WORKING`, and `mail-gmail-ecdsa-leaf-bug` auto-memories.
+**Proven on hardware (v1.3.2):** EAS (Zoho: Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy),
+IMAP+SMTP (Fastmail, TLS 1.3), and Gmail IMAP/POP/SMTP (TLS 1.2, see the ECDSA bullet) all validate + sync.
 - **Architecture:** `com.palm.app.email` is just UI → delegates to `palm://com.palm.eas/`
   etc. TLS happens in the native transports: **EAS via libcurl** (`libemail-common`'s
   `glibcurl`, multi interface; its `CurlSSLVerifier` adds a verify callback but sets NO CA
@@ -66,6 +66,23 @@ AND IMAP+SMTP (Fastmail, TLS 1.3) all validate + sync.
     (`9f6489…`→`78956f…`), patches a same-fs temp copy + `mv` (in-place `dd` fails ETXTBSY on
     the running binary), backs up to `/var/luna/mojomail-imap.tagfix-orig`; prerm restores. The
     one and only mojomail-binary change — see `mojomail-changes.md`.
+- **Gmail / ECDSA-leaf fix (v1.3.2)** — `libpalmsocket` (0.9.8-built, on 1.1 via our shim)
+  **mis-verifies ECDSA (P-256) LEAF certs**: it declares the leaf "self signed" (`X509_V_ERR=18`)
+  at depth 0 and never links it → validation fails with **err 4010 "self signed certificate"**.
+  **RSA leaves verify fine.** Google's `imap.`/`pop.gmail.com` serve ECDSA leaves by default, so
+  Gmail IMAP/POP broke while Fastmail (RSA) worked — NOT the chain/root/store/clock (`curl11` on
+  the same OpenSSL+bundle verifies Gmail every way). **Fix (config-only, KEEPS full validation):**
+  ship `/usr/lib/ssl11mail/mailssl.cnf` and add `OPENSSL_CONF=…mailssl.cnf` to the **imap/pop/smtp**
+  launchers (NOT `eas` — it verifies via libcurl/`CurlSSLVerifier`, no bug). The cnf's
+  `[system_default]` sets `MaxProtocol=TLSv1.2` + `SignatureAlgorithms=RSA+SHA256:RSA+SHA384:RSA+SHA512`,
+  forcing the server to pick an RSA cert. **Both settings needed:** under TLS 1.3 Google still
+  serves ECDSA, and libpalmsocket overrides any `CipherString` (but honors `MaxProtocol` +
+  `SignatureAlgorithms`). **Upgrade-safe:** the postinst injects `OPENSSL_CONF` in a step
+  *independent* of the `grep -q ssl11mail … continue` idempotency check, so ≤1.3.1 launchers
+  (already env-prefixed) still get it. Reproduce/diagnose pre-auth (no creds needed — cert check
+  is at handshake) via `luna-send -i -n 2 palm://com.palm.imap/validateAccount '{"username":"u@gmail.com","password":"d","config":{"server":"imap.gmail.com","port":993,"encryption":"ssl"}}'`
+  (`4010`=cert fail, `1000`/`3099`/`535`=cert passed→auth/protocol); per-depth trace with
+  `PmLogCtl set libpalmsocket debug`. (**Gmail also needs a Google App Password** — separate.)
 - **Build needs** `curl-mail/lib/.libs/libcurl.so.4.*` AND `libssl_compat.so` (build the shim
   from `openssl_compat_shim.c`); else mail is SKIPped/errors. Validate with `mail-tls13-diag.sh`.
 - **Build host:** needs the PalmPDK ARM cross-gcc (`/opt/PalmPDK/arm-gcc`, gcc-4.3.3, i386 →
