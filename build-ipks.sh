@@ -36,7 +36,7 @@ MAINT="WebOS Internals <support@webos-internals.org>"
 TLSVER="1.1.2"   # browser-tls13: 1.1.2 ssl11 OpenSSL rebuilt with ARM NEON bulk crypto (bsaes AES / sha-neon / poly1305-neon / ChaCha20) on top of the existing ecp_nistz256+bn_mul_mont handshake asm -- see build-openssl.sh; still 1.1.1w, ABI 0x5000002 unchanged. 1.1.1: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
 CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl (stock backed up); CA bundle defaulted
-LUNAVER="1.1.2"  # luna-tls13: 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
+LUNAVER="1.1.3"  # luna-tls13: 1.1.3: ship a setcpushares-task env-scrub wrapper so App-Manager installs/removes (Preware installSvc/replaceSvc, WOSQI) work again. LunaSysMgr drives them via `setcpushares-task ApplicationInstallerUtility -c install ...`; setcpushares-task is a /bin/sh script, and on LunaCE the install child's env is composed with LD_PRELOAD=libpvrtc.so while our leaked LD_BIND_NOW=1 forces eager binding of libpvrtc's undefined NApp_* -> /bin/sh dies at exec (exit 127/status 32512), the install FAILS, com.palm.appinstaller drops the connection, and Preware's luna-send blocks forever ("stuck IPKG lock"/wedge). Same fix shape as setcpushares-pdk (a DIFFERENT cpu-shares helper -- pdk=app launch, task=install): static wrapper installed AS setcpushares-task (stock script -> .real) strips the tls13 additions (LD_BIND_NOW + ssl11 preload/libpath) and execs the real script; scrubbed env propagates to the whole install subtree. Hardware-proven: composed env {LD_BIND_NOW=1, LD_PRELOAD=libpvrtc.so}, wrapper -> install runs to SUCCESS. 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
 MAILVER="1.3.2"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.2: Gmail (and any ECDSA-leaf server) IMAP/POP fix -- libpalmsocket (0.9.8-built, on 1.1 via our shim) mis-verifies ECDSA leaf certs as "self signed" (X509_V_ERR=18 -> err 4010); ship /usr/lib/ssl11mail/mailssl.cnf + inject OPENSSL_CONF into the imap/pop/smtp launchers to force TLS 1.2 + RSA cert (keeps full validation; eas untouched -- it verifies via libcurl). Upgrade-safe: injects OPENSSL_CONF even on launchers a prior mail-tls13 already patched. 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
@@ -432,6 +432,22 @@ else
     exit 1
 fi
 chmod 0644 "$F4/setcpushares-pdk.wrap"
+# setcpushares-task env-scrub wrapper payload: same compile-or-prebuilt strategy
+# (App-Manager install/remove fix -- see the postinst block).
+STWRAP_SRC="$BASE/setcpushares-task-wrap.c"
+STWRAP_BIN="$BASE/setcpushares-task-wrap.bin"
+if [ -x "$CROSSGCC" ] && [ -f "$STWRAP_SRC" ]; then
+    "$CROSSGCC" -static -Os -o "$F4/setcpushares-task.wrap" "$STWRAP_SRC"
+    "${CROSSGCC%gcc}strip" "$F4/setcpushares-task.wrap" 2>/dev/null || true
+    echo "  luna: compiled setcpushares-task wrapper from source"
+elif [ -f "$STWRAP_BIN" ]; then
+    cp -f "$STWRAP_BIN" "$F4/setcpushares-task.wrap"
+    echo "  luna: using prebuilt setcpushares-task wrapper"
+else
+    echo "ERROR: no setcpushares-task wrapper -- need $STWRAP_SRC + PalmPDK gcc, or prebuilt $STWRAP_BIN" >&2
+    exit 1
+fi
+chmod 0644 "$F4/setcpushares-task.wrap"
 cat > "$APPDIR4/appinfo.json" <<EOF
 { "title":"Luna TLS 1.3", "id":"$ID4", "version":"$LUNAVER", "vendor":"WebOS Internals",
   "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
@@ -562,6 +578,49 @@ else
 fi
 # ---- end setcpushares-pdk fix --------------------------------------------------
 
+# ---- setcpushares-task env-scrub wrapper (INDEPENDENT of the launcher patch) ----
+# LunaSysMgr's App-Manager install/remove path runs the installer as
+#   /usr/sbin/setcpushares-task  /usr/bin/ApplicationInstallerUtility -c install -p <ipk> ...
+# setcpushares-task is a #!/bin/sh script; on LunaCE the install child's env is
+# composed with LD_PRELOAD=libpvrtc.so, and our leaked LD_BIND_NOW=1 forces eager
+# binding of libpvrtc's undefined NApp_* symbols -> /bin/sh dies at exec (exit 127
+# / status 32512) BEFORE the installer runs. The install fails, com.palm.appinstaller
+# drops its connection, and the caller's subscription never completes -> Preware
+# (installSvc/replaceSvc) and WOSQI WEDGE ("stuck IPKG lock"). Same fix as the PDK
+# path but a DIFFERENT cpu-shares helper: a STATIC wrapper AS setcpushares-task
+# (stock script -> .real) strips ONLY the tls13 additions and execs the real script,
+# whose scrubbed env propagates to the whole install subtree. Static because a shell
+# scrub can't run when the env kills /bin/sh. Runs BEFORE the launcher "already
+# patched" short-circuit so existing 1.1.x installs get it on upgrade. Keys on .real.
+ST=/usr/sbin/setcpushares-task
+STW=""
+for R in "$IPKG_OFFLINE_ROOT" /media/cryptofs/apps /var ""; do
+    f="$R/usr/palm/applications/$PID/files/setcpushares-task.wrap"
+    [ -f "$f" ] && { STW="$f"; break; }
+done
+if [ -z "$STW" ]; then
+    echo "luna-tls13 WARNING: setcpushares-task wrapper payload not found -- App-Manager install fix NOT applied."
+elif [ ! -f "$ST" ]; then
+    echo "luna-tls13 NOTE: $ST not present -- skipping App-Manager install fix."
+elif [ -f "$ST.real" ]; then
+    cp -f "$STW" "$ST"; chmod 755 "$ST"          # already wrapped: refresh, keep .real intact
+    echo "luna-tls13: setcpushares-task wrapper already installed (refreshed)."
+elif head -n 1 "$ST" 2>/dev/null | grep -q '^#!'; then
+    mkdir -p /var/luna 2>/dev/null
+    [ -f /var/luna/setcpushares-task.tls13-orig ] || cp -p "$ST" /var/luna/setcpushares-task.tls13-orig
+    mv -f "$ST" "$ST.real"
+    cp -f "$STW" "$ST"; chmod 755 "$ST"
+    if [ -s "$ST" ] && [ -f "$ST.real" ]; then
+        echo "luna-tls13: installed setcpushares-task env-scrub wrapper (App-Manager installs/removes work under LunaCE)."
+    else
+        echo "luna-tls13 ERROR: setcpushares-task wrapper install failed -- restoring stock script."
+        mv -f "$ST.real" "$ST" 2>/dev/null
+    fi
+else
+    echo "luna-tls13 WARNING: $ST has no shebang and no .real exists -- looks like a stray wrapper, not the stock script. NOT wrapping."
+fi
+# ---- end setcpushares-task fix -------------------------------------------------
+
 # ---- LunaSysMgr launcher: route app WebKit through ssl11 (unchanged from 1.1.0) --
 if grep -q 'ssl11/libssl_compat.so' "$L" 2>/dev/null && grep -q 'LD_BIND_NOW=1' "$L" 2>/dev/null; then
     echo "luna-tls13: LunaSysMgr launcher already patched (ssl11 + LD_BIND_NOW). REBOOT to activate the media fix if you have not rebooted since this install."
@@ -626,6 +685,15 @@ elif [ -f /var/luna/setcpushares-pdk.tls13-orig ]; then
     cp -f /var/luna/setcpushares-pdk.tls13-orig "$SP"; chmod 755 "$SP"
 fi
 rm -f /var/luna/setcpushares-pdk.tls13-orig
+
+# restore setcpushares-task: move the stock script back over the wrapper.
+ST=/usr/sbin/setcpushares-task
+if [ -f "$ST.real" ]; then
+    mv -f "$ST.real" "$ST"
+elif [ -f /var/luna/setcpushares-task.tls13-orig ]; then
+    cp -f /var/luna/setcpushares-task.tls13-orig "$ST"; chmod 755 "$ST"
+fi
+rm -f /var/luna/setcpushares-task.tls13-orig
 
 if [ -f /var/luna/LunaSysMgr.tls13-orig ]; then
     cp -f /var/luna/LunaSysMgr.tls13-orig "$L"
