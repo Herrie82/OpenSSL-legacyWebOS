@@ -2,5 +2,6 @@
 ipks/_build_*
 ipks/_b_*
 BrowserServer.bin
+LunaDownloadMgr.bin
 ipks-backup/
 analysis/

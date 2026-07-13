@@ -25,7 +25,7 @@ set -euo pipefail
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 OUT="$BASE/ipks"; ARCH="armv7"
 
-# Optional package selection: ./build-ipks.sh [browser|ntp|curl|luna|mail|all ...]
+# Optional package selection: ./build-ipks.sh [browser|ntp|curl|luna|mail|downloadmgr|all ...]
 # No args -> "all" (back-compat). 'want <pkg>' gates each section, so e.g. the mail
 # package can be (re)built on a box without a clean stock device / BrowserServer.bin
 # while iterating its libcurl (see BUILDING.md). 'all' also gates the blanket
@@ -39,7 +39,9 @@ CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl 
 LUNAVER="1.1.3"  # luna-tls13: 1.1.3: ship a setcpushares-task env-scrub wrapper so App-Manager installs/removes (Preware installSvc/replaceSvc, WOSQI) work again. LunaSysMgr drives them via `setcpushares-task ApplicationInstallerUtility -c install ...`; setcpushares-task is a /bin/sh script, and on LunaCE the install child's env is composed with LD_PRELOAD=libpvrtc.so while our leaked LD_BIND_NOW=1 forces eager binding of libpvrtc's undefined NApp_* -> /bin/sh dies at exec (exit 127/status 32512), the install FAILS, com.palm.appinstaller drops the connection, and Preware's luna-send blocks forever ("stuck IPKG lock"/wedge). Same fix shape as setcpushares-pdk (a DIFFERENT cpu-shares helper -- pdk=app launch, task=install): static wrapper installed AS setcpushares-task (stock script -> .real) strips the tls13 additions (LD_BIND_NOW + ssl11 preload/libpath) and execs the real script; scrubbed env propagates to the whole install subtree. Hardware-proven: composed env {LD_BIND_NOW=1, LD_PRELOAD=libpvrtc.so}, wrapper -> install runs to SUCCESS. 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
 MAILVER="1.3.2"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.2: Gmail (and any ECDSA-leaf server) IMAP/POP fix -- libpalmsocket (0.9.8-built, on 1.1 via our shim) mis-verifies ECDSA leaf certs as "self signed" (X509_V_ERR=18 -> err 4010); ship /usr/lib/ssl11mail/mailssl.cnf + inject OPENSSL_CONF into the imap/pop/smtp launchers to force TLS 1.2 + RSA cert (keeps full validation; eas untouched -- it verifies via libcurl). Upgrade-safe: injects OPENSSL_CONF even on launchers a prior mail-tls13 already patched. 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
+DOWNVER="1.0.0"  # downloadmgr-tls13: route the system Download Manager (/usr/bin/LunaDownloadMgr) through modern TLS. LunaDownloadMgr does ALL its HTTP(S) via libcurl and links NO OpenSSL directly, so an RPATH (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl (the mail 7.61.1 build: OpenSSL 1.1.1w + c-ares + baked CA bundle) modernizes both downloads AND uploads with no binary code patch. The baked ca-bundle makes cert validation succeed despite the daemon's hard-coded CURLOPT_CAPATH=/var/ssl/trustedcerts (which is 0.9.8-hashed and invisible to OpenSSL 1.1). Hardware-proven: download negotiates TLS 1.3, Let's Encrypt/modern certs validate, multipart upload 200. Arbitrary request headers on downloads (Authorization/Bearer JWT, X-Auth-Token) work via the cookieHeader multi-line convention (see downloadmgr-tls13/README.md); uploads already take a native customHttpHeaders array. Needs browser-tls13 (provides /usr/lib/ssl11 OpenSSL).
 STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
+DLMGR_STOCK_MD5="587f1a9f51c3e6e1c905e44e55ea6193"   # stock webOS 3.0.5 /usr/bin/LunaDownloadMgr
 
 LIBSSL="$BASE/openssl-1.1.1w/libssl.so.1.1"
 LIBCRYPTO="$BASE/openssl-1.1.1w/libcrypto.so.1.1"
@@ -48,6 +50,8 @@ LIBCURL="$BASE/curl-7.88.1/lib/.libs/libcurl.so.4.8.0"
 CURLBIN="$BASE/curl-7.88.1/src/.libs/curl"
 BROWSERSERVER="$BASE/BrowserServer.bin"
 NTPSRC="$BASE/ntpdate-sync"
+DLMGRBIN="$BASE/LunaDownloadMgr.bin"                    # stock LunaDownloadMgr to RPATH (auto-fetched like BrowserServer.bin)
+MAIL_LIBCURL="$BASE/curl-mail/lib/.libs/libcurl.so.4.5.0"  # libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + baked CA bundle); shared with mail-tls13
 
 # --- build prerequisites (fail fast, before doing any work) -------------------
 if want browser; then
@@ -112,6 +116,46 @@ else
   echo "Using existing BrowserServer.bin ($(md5sum "$BROWSERSERVER" | cut -d' ' -f1))"
 fi
 fi  # want browser
+# -----------------------------------------------------------------------------
+
+# downloadmgr-tls13 needs the STOCK LunaDownloadMgr to RPATH -- same story as
+# BrowserServer.bin: fetch it off a connected TouchPad if not already in the repo.
+if want downloadmgr; then
+command -v patchelf >/dev/null 2>&1 || {
+  echo "ERROR: 'patchelf' not found in PATH -- required to RPATH LunaDownloadMgr." >&2
+  echo "       Install it (e.g. 'apt-get install patchelf', or 'brew install patchelf')." >&2
+  exit 1
+}
+if [ ! -f "$DLMGRBIN" ]; then
+  echo "LunaDownloadMgr.bin not present -- fetching the stock binary from a connected TouchPad..."
+  command -v novacom >/dev/null 2>&1 || {
+    echo "ERROR: 'novacom' not found in PATH; OR place a stock 3.0.5 LunaDownloadMgr" >&2
+    echo "       (md5 $DLMGR_STOCK_MD5) at: $DLMGRBIN" >&2
+    exit 1
+  }
+  if ! novacom -l 2>/dev/null | grep -qiE 'usb|tcp|topaz'; then
+    echo "ERROR: no webOS device detected over novacom -- cannot fetch LunaDownloadMgr." >&2
+    echo "       Connect a TouchPad (USB) or place a stock binary at $DLMGRBIN." >&2
+    exit 1
+  fi
+  novacom get file:///usr/bin/LunaDownloadMgr > "$DLMGRBIN" 2>/dev/null
+  got=$(md5sum "$DLMGRBIN" 2>/dev/null | cut -d' ' -f1)
+  if [ ! -s "$DLMGRBIN" ] || [ "$got" != "$DLMGR_STOCK_MD5" ]; then
+    echo "ERROR: fetched LunaDownloadMgr md5 ($got) is NOT the stock 3.0.5 binary" >&2
+    echo "       (expected $DLMGR_STOCK_MD5). Use a clean 3.0.5 device or supply the binary." >&2
+    rm -f "$DLMGRBIN"
+    exit 1
+  fi
+  echo "  fetched stock LunaDownloadMgr ($got) -> $DLMGRBIN"
+else
+  echo "Using existing LunaDownloadMgr.bin ($(md5sum "$DLMGRBIN" | cut -d' ' -f1))"
+fi
+[ -f "$MAIL_LIBCURL" ] || {
+  echo "ERROR: $MAIL_LIBCURL not found -- build the mail libcurl first (see BUILDING.md)." >&2
+  echo "       downloadmgr-tls13 reuses that 7.61.1 (OpenSSL 1.1 + c-ares + baked CA bundle) build." >&2
+  exit 1
+}
+fi  # want downloadmgr
 # -----------------------------------------------------------------------------
 
 # Clean only our build artifacts in $OUT (the repo ipks/ dir) -- keep README.md etc.
@@ -1000,5 +1044,130 @@ EOF
   chmod 0755 "$B6/control/postinst" "$B6/control/prerm"
   pack "$B6" "${ID6}_${IMAPTAGVER}_${ARCH}.ipk"
 fi  # want imaptagfix
+
+############################# downloadmgr-tls13 #############################
+# The system Download Manager (/usr/bin/LunaDownloadMgr, com.palm.downloadmanager)
+# does ALL its HTTP(S) transfers -- downloads AND uploads -- through libcurl and
+# links NO OpenSSL directly (its only TLS-bearing NEEDED is libcurl.so.4). So an
+# RPATH onto a modern libcurl is all it takes to move the whole service to TLS
+# 1.2/1.3; no code patch to the 2011 binary. We reuse the mail package's libcurl
+# 7.61.1 (built vs OpenSSL 1.1.1w, --enable-ares to match the DM's c-ares resolver,
+# and --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt). That baked-in CA bundle
+# is load-bearing: the daemon hard-codes CURLOPT_CAPATH=/var/ssl/trustedcerts, a
+# directory hashed by the device's OpenSSL 0.9.8 whose subject hashes OpenSSL 1.1
+# cannot find -- so without a baked default CAINFO, modern certs would read as
+# "unable to get local issuer certificate" even though TLS negotiated fine.
+# Header note: uploads already accept a native customHttpHeaders array; downloads
+# gain arbitrary request headers (Authorization/Bearer JWT, X-Auth-Token, ...) via
+# the cookieHeader multi-line convention documented in downloadmgr-tls13/README.md
+# (curl 7.61.1 emits any line after the first as a real request header) -- also no
+# binary patch. RPATH = /usr/lib/ssl11dl (our libcurl) : /usr/lib/ssl11 (browser-
+# tls13's OpenSSL); DT_RPATH so it also covers libcurl's transitive libssl load.
+if want downloadmgr; then
+ID7=org.webosinternals.downloadmgr-tls13
+B7="$OUT/_b_dlmgr"; APPDIR7="$B7/data/usr/palm/applications/$ID7"; F7="$APPDIR7/files"
+rm -rf "$B7"
+mkdir -p "$B7/control" "$F7/ssl11dl"
+install -m0644 "$MAIL_LIBCURL" "$F7/ssl11dl/libcurl.so.4.5.0"
+# ship the RPATH'd LunaDownloadMgr
+cp "$DLMGRBIN" "$F7/LunaDownloadMgr.rpath"; chmod 0644 "$F7/LunaDownloadMgr.rpath"
+patchelf --force-rpath --set-rpath '/usr/lib/ssl11dl:/usr/lib/ssl11' "$F7/LunaDownloadMgr.rpath"
+RPATH_DLMGR_MD5=$(md5sum "$F7/LunaDownloadMgr.rpath" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
+
+cat > "$APPDIR7/appinfo.json" <<EOF
+{ "title":"Download Manager TLS 1.3", "id":"$ID7", "version":"$DOWNVER", "vendor":"WebOS Internals",
+  "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
+  "noWindow":true, "visible":false }
+EOF
+echo '<html><head><title>Download Manager TLS 1.3</title></head><body></body></html>' > "$APPDIR7/index.html"
+echo "$PNG_B64" | base64 -d > "$APPDIR7/icon.png"
+
+cat > "$B7/control/control" <<EOF
+Package: $ID7
+Version: $DOWNVER
+Architecture: $ARCH
+Maintainer: $MAINT
+Description: Modern TLS 1.2/1.3 for the webOS Download Manager (downloads and uploads)
+Section: System
+Priority: optional
+Depends: org.webosinternals.browser-tls13
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Download Manager TLS 1.3", "FullDescription":"Routes the system Download Manager (com.palm.downloadmanager / /usr/bin/LunaDownloadMgr) through modern TLS so background downloads AND uploads reach today's HTTPS servers. LunaDownloadMgr does all its transfers via libcurl and links no OpenSSL directly, so it is simply RPATH'd (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + a baked-in CA bundle) -- no patch to the binary's code. The baked CA bundle is required because the daemon hard-codes an OpenSSL-0.9.8-hashed CAPATH that OpenSSL 1.1 cannot read. Hardware-proven: downloads negotiate TLS 1.3, modern/Let's Encrypt certificates validate, and multipart uploads return 200. Bonus: downloads can now send arbitrary request headers (Authorization: Bearer <JWT>, X-Auth-Token, ...) via the cookieHeader multi-line convention (uploads already accept a customHttpHeaders array). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11 OpenSSL); a current /etc/ssl/certs/ca-certificates.crt (e.g. com.palm.rootcertsupdate) and a correct clock (org.webosinternals.ntpdate-sync) are needed for cert validation. Remove this BEFORE browser-tls13. No reboot needed.", "License":"OpenSSL/curl" }
+EOF
+
+cat > "$B7/control/postinst" <<EOF
+#!/bin/sh
+STOCK_DLMGR_MD5="$DLMGR_STOCK_MD5"
+RPATH_DLMGR_MD5="$RPATH_DLMGR_MD5"
+PID="$ID7"
+EOF
+cat >> "$B7/control/postinst" <<'EOF'
+[ -z "$IPKG_OFFLINE_ROOT" ] && IPKG_OFFLINE_ROOT=/media/cryptofs/apps
+mount -o remount,rw / 2>/dev/null || true
+SRC=""
+for R in "$IPKG_OFFLINE_ROOT" /media/cryptofs/apps /var ""; do
+    d="$R/usr/palm/applications/$PID/files"
+    [ -d "$d/ssl11dl" ] && { SRC="$d"; break; }
+done
+[ -n "$SRC" ] || { echo "ERROR: downloadmgr-tls13 payload not found - install failed"; exit 1; }
+
+# HARD PREREQ: browser-tls13's OpenSSL under /usr/lib/ssl11. Our libcurl NEEDs
+# libssl.so.1.1/libcrypto.so.1.1 from there; without it LunaDownloadMgr can't
+# start and ALL downloads break. Refuse to patch (can't brick on wrong order).
+if [ ! -f /usr/lib/ssl11/libssl.so.1.1 ]; then
+    echo "ERROR: /usr/lib/ssl11 not found -- install org.webosinternals.browser-tls13 first."
+    exit 1
+fi
+
+# 1. install our modern libcurl into a package-private dir (symlink made here --
+#    the offline-root fs rejects symlink creation during ipkg unpack)
+rm -rf /usr/lib/ssl11dl; mkdir -p /usr/lib/ssl11dl
+cp -f "$SRC/ssl11dl/libcurl.so.4.5.0" /usr/lib/ssl11dl/
+chmod 755 /usr/lib/ssl11dl/libcurl.so.4.5.0
+ln -sf libcurl.so.4.5.0 /usr/lib/ssl11dl/libcurl.so.4
+
+# 2. back up the stock LunaDownloadMgr ONCE (only if no backup yet AND it isn't
+#    already our RPATH'd build), then swap ours in. Mirrors browser-tls13 so the
+#    package stays cleanly uninstallable even over a non-stock daemon.
+cur=$(md5sum /usr/bin/LunaDownloadMgr 2>/dev/null | cut -d' ' -f1)
+if [ ! -f /var/luna/LunaDownloadMgr.tls13-orig ] && [ "$cur" != "$RPATH_DLMGR_MD5" ] && [ -f /usr/bin/LunaDownloadMgr ]; then
+    mkdir -p /var/luna 2>/dev/null
+    cp -p /usr/bin/LunaDownloadMgr /var/luna/LunaDownloadMgr.tls13-orig
+    [ "$cur" = "$STOCK_DLMGR_MD5" ] || echo "NOTE: backed up a non-stock LunaDownloadMgr ($cur) as the uninstall restore point."
+fi
+cp -f "$SRC/LunaDownloadMgr.rpath" /usr/bin/LunaDownloadMgr
+chmod 0750 /usr/bin/LunaDownloadMgr
+
+# 3. CA bundle sanity (validation relies on the baked default bundle)
+n=$(grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt 2>/dev/null); [ -z "$n" ] && n=0
+[ "$n" -lt 50 ] && echo "WARNING: stale CA bundle ($n certs) -- install a current Mozilla ca-certificates ipk (downloads won't validate modern certs otherwise)."
+
+# 4. restart the Download Manager upstart job so the change takes effect (no reboot)
+stop LunaDownloadMgr 2>/dev/null || true
+i=0; while [ $i -lt 8 ]; do ps=$(pidof LunaDownloadMgr 2>/dev/null); [ -z "$ps" ] && break; for p in $ps; do kill -9 $p 2>/dev/null; done; i=$((i+1)); sleep 1; done
+start LunaDownloadMgr 2>/dev/null || true
+exit 0
+EOF
+
+cat > "$B7/control/prerm" <<'EOF'
+#!/bin/sh
+mount -o remount,rw / 2>/dev/null || true
+stop LunaDownloadMgr 2>/dev/null || true
+i=0; while [ $i -lt 8 ]; do ps=$(pidof LunaDownloadMgr 2>/dev/null); [ -z "$ps" ] && break; for p in $ps; do kill -9 $p 2>/dev/null; done; i=$((i+1)); sleep 1; done
+# Restore stock ONLY if we have the backup; otherwise the live LunaDownloadMgr is
+# our RPATH'd one and removing /usr/lib/ssl11dl would leave it unable to load its
+# libcurl (dead download service) -- so keep the lib in place.
+if [ -f /var/luna/LunaDownloadMgr.tls13-orig ]; then
+    mv -f /var/luna/LunaDownloadMgr.tls13-orig /usr/bin/LunaDownloadMgr
+    chmod 0750 /usr/bin/LunaDownloadMgr
+    rm -rf /usr/lib/ssl11dl
+else
+    echo "WARNING: no LunaDownloadMgr.tls13-orig backup; keeping /usr/lib/ssl11dl so downloads keep working."
+fi
+start LunaDownloadMgr 2>/dev/null || true
+exit 0
+EOF
+chmod 0755 "$B7/control/postinst" "$B7/control/prerm"
+pack "$B7" "${ID7}_${DOWNVER}_${ARCH}.ipk"
+fi  # want downloadmgr
 
 echo "=== output ==="; ls -l "$OUT"/*.ipk
