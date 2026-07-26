@@ -10,11 +10,13 @@ matching device folder **plus** the three shared packages:
 |--------|----------|------------------------|---------------------|
 | HP TouchPad (webOS 3.0.5) | topaz | [`topaz/`](topaz/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | HP Pre 3 (webOS 2.2.4) | mantaray | [`mantaray/`](mantaray/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+| Palm Pre 2 (webOS 2.2.4) | roadrunner | [`roadrunner/`](roadrunner/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+| HP Veer (webOS 2.2.4) | broadway | [`broadway/`](broadway/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 
 Each device folder holds `browser-tls13`, `luna-tls13`, `downloadmgr-tls13`, and
 `mojomail-imap-tagfix` built for that exact device. The shared `curl`/`ntp`/`mail`
-packages are identical across devices. (Pre 2 = `broadway`, Veer = `roadrunner` build the
-same way — drop the stock binaries in `devices/<codename>/` and run `./build-ipks.sh`.)
+packages are identical across devices. (A new device builds the same way — drop its stock
+binaries in `devices/<codename>/` and run `./build-ipks.sh <codename>`.)
 
 ## Install order
 
