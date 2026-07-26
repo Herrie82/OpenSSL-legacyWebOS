@@ -1,5 +1,23 @@
 # Modern TLS ipks — install order
 
+## Which files to grab (per device)
+
+Device-**specific** packages ship a patched stock binary and live in a per-device folder;
+device-**independent** packages are shared and live here at the top level. Install the
+matching device folder **plus** the three shared packages:
+
+| Device | codename | device-specific folder | + shared (this dir) |
+|--------|----------|------------------------|---------------------|
+| HP TouchPad (webOS 3.0.5) | topaz | [`topaz/`](topaz/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+| HP Pre 3 (webOS 2.2.4) | mantaray | [`mantaray/`](mantaray/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+
+Each device folder holds `browser-tls13`, `luna-tls13`, `downloadmgr-tls13`, and
+`mojomail-imap-tagfix` built for that exact device. The shared `curl`/`ntp`/`mail`
+packages are identical across devices. (Pre 2 = `broadway`, Veer = `roadrunner` build the
+same way — drop the stock binaries in `devices/<codename>/` and run `./build-ipks.sh`.)
+
+## Install order
+
 Install via **Preware** / **WebOS Quick Install** / `ipkg install`, in this order:
 
 1. `org.webosinternals.browser-tls13` — browser TLS 1.3 (provides `/usr/lib/ssl11`; **install first**)

@@ -30,8 +30,170 @@ OUT="$BASE/ipks"; ARCH="armv7"
 # package can be (re)built on a box without a clean stock device / BrowserServer.bin
 # while iterating its libcurl (see BUILDING.md). 'all' also gates the blanket
 # ipk clean below so a selective rebuild won't wipe the other packages' ipks.
-WANT="${*:-all}"
+# --- device registry + arg parsing -------------------------------------------
+# One repo builds per-device variants side by side. Device-SPECIFIC packages
+# (browser-tls13, and later downloadmgr-tls13) ship a patched stock binary and go to
+# ipks/<device>/; device-INDEPENDENT packages (curl-tls13, ntpdate-sync) build once
+# into ipks/. Each device's stock binaries live under devices/<device>/ :
+#   devices/<device>/BrowserServer.bin     (stock /usr/bin/BrowserServer to RPATH)
+#   devices/<device>/LunaDownloadMgr.bin   (stock /usr/bin/LunaDownloadMgr, phase 3)
+# (legacy top-level BrowserServer.bin is still honored as topaz's, for back-compat.)
+# webOS device codenames (from the webOS Doctor build names):
+#   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  broadway=Pre 2(2.2.4)  roadrunner=Veer(2.2.4)
+ALL_DEVICES="topaz mantaray broadway roadrunner"
+dev_product() { case "$1" in
+  topaz)      echo "HP TouchPad (webOS 3.0.5)";;
+  mantaray)   echo "HP Pre 3 (webOS 2.2.4)";;
+  broadway)   echo "Palm Pre 2 (webOS 2.2.4)";;
+  roadrunner) echo "HP Veer (webOS 2.2.4)";;
+  *)          echo "webOS device ($1)";;
+esac; }
+# Expected STOCK BrowserServer md5 -- used ONLY to verify a novacom AUTO-FETCH grabbed
+# a clean/unpatched binary. Empty => skip that guard (trust a supplied .bin).
+dev_bs_md5() { case "$1" in
+  topaz)      echo "0786bdf698220aa82a90838e30355c9f";;
+  mantaray)   echo "44d2b0ce0fa4f1e0c660039676df5e36";;
+  broadway)   echo "";;   # drop in devices/broadway/BrowserServer.bin (md5 optional)
+  roadrunner) echo "";;   # drop in devices/roadrunner/BrowserServer.bin (md5 optional)
+  *)          echo "";;
+esac; }
+dev_novacom() { case "$1" in   # novacom -l device-id token, for auto-fetch matching
+  topaz)      echo "topaz";;
+  mantaray)   echo "mantaray";;
+  broadway)   echo "broadway";;
+  roadrunner) echo "roadrunner";;
+  *)          echo "$1";;
+esac; }
+# webOS major family. Gates luna-tls13's env-scrub wrappers: 3.0.5 (LunaCE) needs the
+# media-pipeline / setcpushares-pdk / setcpushares-task wrappers; webOS 2.x does not
+# (no LunaCE; setcpushares-pdk doesn't even exist) -> 2.x gets a clean launcher-only luna.
+dev_webos() { case "$1" in
+  topaz)      echo "3";;
+  mantaray|broadway|roadrunner) echo "2";;
+  *)          echo "2";;
+esac; }
+# Expected stock LunaDownloadMgr md5 (downloadmgr-tls13) -- verify auto-fetch only; empty=>skip.
+dev_dlmgr_md5() { case "$1" in
+  topaz)      echo "587f1a9f51c3e6e1c905e44e55ea6193";;
+  mantaray)   echo "44035016e79c7787017c7e218aef00cc";;
+  broadway)   echo "";;
+  roadrunner) echo "";;
+  *)          echo "";;
+esac; }
+# mojomail-imap-tagfix: stock md5 / patched md5 / file offset of the "~A"->"AA" tag byte.
+# All three are per-build (offset moves between webOS builds). Empty stock md5 => device
+# skipped (unknown offset). Recompute for a new device: find the single "~A", flip 0x7e->0x41.
+dev_imap_stock_md5()   { case "$1" in
+  topaz)    echo "9f6489ae48fc131733c1a88a9aa1056a";;
+  mantaray) echo "291dbc5f6cc52392e4d653d39e528226";;
+  *)        echo "";;
+esac; }
+dev_imap_patched_md5() { case "$1" in
+  topaz)    echo "78956f6daf374a9a940e914459f234c3";;
+  mantaray) echo "9cf606e11683d35b8f8da2145a23afc6";;
+  *)        echo "";;
+esac; }
+dev_imap_offset()      { case "$1" in
+  topaz)    echo "991784";;
+  mantaray) echo "988724";;
+  *)        echo "";;
+esac; }
+is_device() { case " $ALL_DEVICES " in *" $1 "*) return 0;; *) return 1;; esac; }
+
+# downloadmgr_for <dev>: echo a verified stock LunaDownloadMgr path (stderr progress), or
+# non-zero if none. Prefers devices/<dev>/LunaDownloadMgr.bin; falls back to novacom fetch.
+downloadmgr_for() {
+  local d="$1" bin exp got tok
+  bin="$BASE/devices/$d/LunaDownloadMgr.bin"
+  if [ ! -f "$bin" ] && [ "$d" = topaz ] && [ -f "$BASE/LunaDownloadMgr.bin" ]; then bin="$BASE/LunaDownloadMgr.bin"; fi
+  exp="$(dev_dlmgr_md5 "$d")"
+  if [ -f "$bin" ]; then
+    got="$(md5sum "$bin" | cut -d' ' -f1)"
+    if [ -n "$exp" ] && [ "$got" != "$exp" ]; then
+      echo "  NOTE: $d LunaDownloadMgr.bin md5 $got != registry $exp (building with it anyway)" >&2
+    fi
+    printf '%s\n' "$bin"; return 0
+  fi
+  command -v novacom >/dev/null 2>&1 || return 1
+  tok="$(dev_novacom "$d")"
+  novacom -l 2>/dev/null | grep -qiE "$tok" || return 1
+  echo "  fetching stock LunaDownloadMgr from a connected $d over novacom..." >&2
+  bin="$BASE/devices/$d/LunaDownloadMgr.bin"; mkdir -p "$(dirname "$bin")"
+  novacom get file:///usr/bin/LunaDownloadMgr > "$bin" 2>/dev/null || { rm -f "$bin"; return 1; }
+  [ -s "$bin" ] || { rm -f "$bin"; return 1; }
+  got="$(md5sum "$bin" | cut -d' ' -f1)"
+  if [ -n "$exp" ] && [ "$got" != "$exp" ]; then
+    echo "ERROR: fetched $d LunaDownloadMgr md5 $got != expected stock $exp (device patched/non-stock?)" >&2
+    rm -f "$bin"; return 1
+  fi
+  echo "  fetched stock $d LunaDownloadMgr ($got)" >&2
+  printf '%s\n' "$bin"; return 0
+}
+
+# Split args into DEVICES (codenames) and WANT (package selectors); either may be
+# given, in any order. DEVICE=... env also seeds DEVICES. Unknown tokens error out.
+#   ./build-ipks.sh                     -> all packages, all devices with a binary present
+#   ./build-ipks.sh mantaray browser    -> just browser-tls13 for the Pre 3
+#   ./build-ipks.sh curl ntp            -> device-independent packages only
+DEVICES=""; WANT=""
+for a in ${DEVICE:-} "$@"; do
+  [ -z "$a" ] && continue
+  if is_device "$a"; then DEVICES="$DEVICES $a"
+  elif [ "$a" = alldevices ]; then DEVICES="$DEVICES $ALL_DEVICES"
+  else case "$a" in
+    all) WANT="$WANT all";;
+    browser|ntp|curl|luna|mail|imaptagfix|downloadmgr) WANT="$WANT $a";;
+    *) echo "ERROR: unknown argument '$a'" >&2
+       echo "       devices:  $ALL_DEVICES (or 'alldevices')" >&2
+       echo "       packages: browser ntp curl luna mail imaptagfix downloadmgr all" >&2
+       exit 1;;
+  esac; fi
+done
+[ -n "$WANT" ] || WANT="all"
 want() { case " $WANT " in *" all "*) return 0;; *" $1 "*) return 0;; *) return 1;; esac; }
+# Default device set = those with a stock BrowserServer present, so a plain build
+# "just works" for whatever device binaries the maintainer has dropped in.
+if [ -z "$(printf %s "$DEVICES" | tr -d ' ')" ]; then
+  for d in $ALL_DEVICES; do
+    if [ -f "$BASE/devices/$d/BrowserServer.bin" ] || { [ "$d" = topaz ] && [ -f "$BASE/BrowserServer.bin" ]; }; then
+      DEVICES="$DEVICES $d"
+    fi
+  done
+fi
+# de-dupe DEVICES, preserving order
+DEVICES="$(printf '%s\n' $DEVICES | awk '!seen[$0]++' | tr '\n' ' ')"
+
+# browserserver_for <dev>: echo a verified stock BrowserServer path for the device to
+# stdout (progress/errors to stderr), or exit non-zero if none is available. Prefers a
+# supplied devices/<dev>/BrowserServer.bin; falls back to a novacom auto-fetch.
+browserserver_for() {
+  local d="$1" bin exp got tok
+  bin="$BASE/devices/$d/BrowserServer.bin"
+  if [ ! -f "$bin" ] && [ "$d" = topaz ] && [ -f "$BASE/BrowserServer.bin" ]; then bin="$BASE/BrowserServer.bin"; fi
+  exp="$(dev_bs_md5 "$d")"
+  if [ -f "$bin" ]; then
+    got="$(md5sum "$bin" | cut -d' ' -f1)"
+    if [ -n "$exp" ] && [ "$got" != "$exp" ]; then
+      echo "  NOTE: $d BrowserServer.bin md5 $got != registry $exp (building with it anyway)" >&2
+    fi
+    printf '%s\n' "$bin"; return 0
+  fi
+  # not on disk -> try to auto-fetch from a connected device of this type
+  command -v novacom >/dev/null 2>&1 || return 1
+  tok="$(dev_novacom "$d")"
+  novacom -l 2>/dev/null | grep -qiE "$tok" || return 1
+  echo "  fetching stock BrowserServer from a connected $d over novacom..." >&2
+  bin="$BASE/devices/$d/BrowserServer.bin"; mkdir -p "$(dirname "$bin")"
+  novacom get file:///usr/bin/BrowserServer > "$bin" 2>/dev/null || { rm -f "$bin"; return 1; }
+  [ -s "$bin" ] || { rm -f "$bin"; return 1; }
+  got="$(md5sum "$bin" | cut -d' ' -f1)"
+  if [ -n "$exp" ] && [ "$got" != "$exp" ]; then
+    echo "ERROR: fetched $d BrowserServer md5 $got != expected stock $exp (device patched/non-stock?)" >&2
+    rm -f "$bin"; return 1
+  fi
+  echo "  fetched stock $d BrowserServer ($got)" >&2
+  printf '%s\n' "$bin"; return 0
+}
 MAINT="WebOS Internals <support@webos-internals.org>"
 TLSVER="1.1.2"   # browser-tls13: 1.1.2 ssl11 OpenSSL rebuilt with ARM NEON bulk crypto (bsaes AES / sha-neon / poly1305-neon / ChaCha20) on top of the existing ecp_nistz256+bn_mul_mont handshake asm -- see build-openssl.sh; still 1.1.1w, ABI 0x5000002 unchanged. 1.1.1: app-layout + robust backup / safe teardown
 NTPVER="2.0.1"   # ntpdate-sync: app-layout
@@ -40,17 +202,16 @@ LUNAVER="1.1.3"  # luna-tls13: 1.1.3: ship a setcpushares-task env-scrub wrapper
 MAILVER="1.3.2"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.2: Gmail (and any ECDSA-leaf server) IMAP/POP fix -- libpalmsocket (0.9.8-built, on 1.1 via our shim) mis-verifies ECDSA leaf certs as "self signed" (X509_V_ERR=18 -> err 4010); ship /usr/lib/ssl11mail/mailssl.cnf + inject OPENSSL_CONF into the imap/pop/smtp launchers to force TLS 1.2 + RSA cert (keeps full validation; eas untouched -- it verifies via libcurl). Upgrade-safe: injects OPENSSL_CONF even on launchers a prior mail-tls13 already patched. 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
 DOWNVER="1.0.0"  # downloadmgr-tls13: route the system Download Manager (/usr/bin/LunaDownloadMgr) through modern TLS. LunaDownloadMgr does ALL its HTTP(S) via libcurl and links NO OpenSSL directly, so an RPATH (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl (the mail 7.61.1 build: OpenSSL 1.1.1w + c-ares + baked CA bundle) modernizes both downloads AND uploads with no binary code patch. The baked ca-bundle makes cert validation succeed despite the daemon's hard-coded CURLOPT_CAPATH=/var/ssl/trustedcerts (which is 0.9.8-hashed and invisible to OpenSSL 1.1). Hardware-proven: download negotiates TLS 1.3, Let's Encrypt/modern certs validate, multipart upload 200. Arbitrary request headers on downloads (Authorization/Bearer JWT, X-Auth-Token) work via the cookieHeader multi-line convention (see downloadmgr-tls13/README.md); uploads already take a native customHttpHeaders array. Needs browser-tls13 (provides /usr/lib/ssl11 OpenSSL).
-STOCK_BS_MD5="0786bdf698220aa82a90838e30355c9f"
-DLMGR_STOCK_MD5="587f1a9f51c3e6e1c905e44e55ea6193"   # stock webOS 3.0.5 /usr/bin/LunaDownloadMgr
+# browser-tls13 / downloadmgr-tls13 stock binaries + md5s are now per-device (see the
+# registry above: dev_bs_md5 / dev_dlmgr_md5, resolved by browserserver_for / downloadmgr_for
+# from devices/<dev>/{BrowserServer,LunaDownloadMgr}.bin).
 
 LIBSSL="$BASE/openssl-1.1.1w/libssl.so.1.1"
 LIBCRYPTO="$BASE/openssl-1.1.1w/libcrypto.so.1.1"
 LIBCOMPAT="$BASE/libssl_compat.so"
 LIBCURL="$BASE/curl-7.88.1/lib/.libs/libcurl.so.4.8.0"
 CURLBIN="$BASE/curl-7.88.1/src/.libs/curl"
-BROWSERSERVER="$BASE/BrowserServer.bin"
 NTPSRC="$BASE/ntpdate-sync"
-DLMGRBIN="$BASE/LunaDownloadMgr.bin"                    # stock LunaDownloadMgr to RPATH (auto-fetched like BrowserServer.bin)
 MAIL_LIBCURL="$BASE/curl-mail/lib/.libs/libcurl.so.4.5.0"  # libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + baked CA bundle); shared with mail-tls13
 
 # --- build prerequisites (fail fast, before doing any work) -------------------
@@ -77,84 +238,29 @@ done
   exit 1
 }
 
-# We need the STOCK 3.0.5 BrowserServer to RPATH. If it isn't already in the repo,
-# fetch it from a connected (factory/stock) TouchPad over novacom. Only needed when
-# actually building browser-tls13 (skipped for a mail-only / selective rebuild).
+# The stock BrowserServer to RPATH is resolved per-device inside the browser-tls13
+# section (browserserver_for <dev>): it uses devices/<dev>/BrowserServer.bin, or
+# auto-fetches from a connected device of that type over novacom.
 if want browser; then
-if [ ! -f "$BROWSERSERVER" ]; then
-  echo "BrowserServer.bin not present -- fetching the stock binary from a connected TouchPad..."
-  command -v novacom >/dev/null 2>&1 || {
-    echo "ERROR: 'novacom' not found in PATH (HP webOS / Palm SDK novacom)." >&2
-    echo "       Install novacom, OR place a stock 3.0.5 BrowserServer" >&2
-    echo "       (md5 $STOCK_BS_MD5) at: $BROWSERSERVER" >&2
-    exit 1
-  }
-  if ! novacom -l 2>/dev/null | grep -qiE 'usb|tcp|topaz'; then
-    echo "ERROR: no webOS device detected over novacom -- cannot fetch BrowserServer." >&2
-    echo "       Connect a TouchPad in novacom mode (USB) and retry. 'novacom -l' should" >&2
-    echo "       list a device, e.g.:  63055 <id> usb topaz-linux" >&2
-    echo "       (Or place a stock BrowserServer at $BROWSERSERVER to skip the fetch.)" >&2
-    exit 1
-  fi
-  novacom get file:///usr/bin/BrowserServer > "$BROWSERSERVER" 2>/dev/null
-  if [ ! -s "$BROWSERSERVER" ]; then
-    echo "ERROR: novacom fetch of /usr/bin/BrowserServer failed (empty result)." >&2
-    rm -f "$BROWSERSERVER"
-    exit 1
-  fi
-  got=$(md5sum "$BROWSERSERVER" | cut -d' ' -f1)
-  if [ "$got" != "$STOCK_BS_MD5" ]; then
-    echo "ERROR: fetched BrowserServer md5 ($got) is NOT the stock 3.0.5 binary" >&2
-    echo "       (expected $STOCK_BS_MD5). The device isn't a clean 3.0.5, or its browser" >&2
-    echo "       is already patched. Factory-reset the TouchPad and retry, or place a" >&2
-    echo "       known-stock BrowserServer at $BROWSERSERVER to override." >&2
-    rm -f "$BROWSERSERVER"
-    exit 1
-  fi
-  echo "  fetched stock BrowserServer ($got) -> $BROWSERSERVER"
-else
-  echo "Using existing BrowserServer.bin ($(md5sum "$BROWSERSERVER" | cut -d' ' -f1))"
+  echo "browser-tls13 target device(s):$DEVICES"
 fi
-fi  # want browser
 # -----------------------------------------------------------------------------
 
-# downloadmgr-tls13 needs the STOCK LunaDownloadMgr to RPATH -- same story as
-# BrowserServer.bin: fetch it off a connected TouchPad if not already in the repo.
+# downloadmgr-tls13 prereqs. The stock LunaDownloadMgr to RPATH is resolved per-device
+# inside the section (downloadmgr_for <dev>): devices/<dev>/LunaDownloadMgr.bin or a
+# novacom auto-fetch. Here we just fail fast on the shared tool/lib prereqs.
 if want downloadmgr; then
 command -v patchelf >/dev/null 2>&1 || {
   echo "ERROR: 'patchelf' not found in PATH -- required to RPATH LunaDownloadMgr." >&2
   echo "       Install it (e.g. 'apt-get install patchelf', or 'brew install patchelf')." >&2
   exit 1
 }
-if [ ! -f "$DLMGRBIN" ]; then
-  echo "LunaDownloadMgr.bin not present -- fetching the stock binary from a connected TouchPad..."
-  command -v novacom >/dev/null 2>&1 || {
-    echo "ERROR: 'novacom' not found in PATH; OR place a stock 3.0.5 LunaDownloadMgr" >&2
-    echo "       (md5 $DLMGR_STOCK_MD5) at: $DLMGRBIN" >&2
-    exit 1
-  }
-  if ! novacom -l 2>/dev/null | grep -qiE 'usb|tcp|topaz'; then
-    echo "ERROR: no webOS device detected over novacom -- cannot fetch LunaDownloadMgr." >&2
-    echo "       Connect a TouchPad (USB) or place a stock binary at $DLMGRBIN." >&2
-    exit 1
-  fi
-  novacom get file:///usr/bin/LunaDownloadMgr > "$DLMGRBIN" 2>/dev/null
-  got=$(md5sum "$DLMGRBIN" 2>/dev/null | cut -d' ' -f1)
-  if [ ! -s "$DLMGRBIN" ] || [ "$got" != "$DLMGR_STOCK_MD5" ]; then
-    echo "ERROR: fetched LunaDownloadMgr md5 ($got) is NOT the stock 3.0.5 binary" >&2
-    echo "       (expected $DLMGR_STOCK_MD5). Use a clean 3.0.5 device or supply the binary." >&2
-    rm -f "$DLMGRBIN"
-    exit 1
-  fi
-  echo "  fetched stock LunaDownloadMgr ($got) -> $DLMGRBIN"
-else
-  echo "Using existing LunaDownloadMgr.bin ($(md5sum "$DLMGRBIN" | cut -d' ' -f1))"
-fi
 [ -f "$MAIL_LIBCURL" ] || {
   echo "ERROR: $MAIL_LIBCURL not found -- build the mail libcurl first (see BUILDING.md)." >&2
   echo "       downloadmgr-tls13 reuses that 7.61.1 (OpenSSL 1.1 + c-ares + baked CA bundle) build." >&2
   exit 1
 }
+echo "downloadmgr-tls13 target device(s):$DEVICES"
 fi  # want downloadmgr
 # -----------------------------------------------------------------------------
 
@@ -162,15 +268,16 @@ fi  # want downloadmgr
 mkdir -p "$OUT"
 # Blanket-clean only for a full build; a selective rebuild keeps unselected ipks
 # (pack() removes each package's own ipk before repacking, so this is safe).
-if want all; then rm -f "$OUT"/*.ipk; fi
-rm -rf "$OUT"/_b_tls "$OUT"/_b_ntp "$OUT"/_b_curl "$OUT"/_b_luna
+if want all; then rm -f "$OUT"/*.ipk "$OUT"/*/*.ipk 2>/dev/null || true; fi
+rm -rf "$OUT"/_b_* 2>/dev/null || true
 T="--owner=0 --group=0 --numeric-owner --format=ustar"
 # 1x1 transparent png (icon)
 PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
-pack() { # $1 builddir  $2 ipkname
-  local b="$1" name="$2"
-  rm -f "$OUT/$name"   # ar rc appends to an existing archive -> always start clean
+pack() { # $1 builddir  $2 ipkname  [$3 outdir=$OUT]
+  local b="$1" name="$2" outdir="${3:-$OUT}"
+  mkdir -p "$outdir"
+  rm -f "$outdir/$name"   # ar rc appends to an existing archive -> always start clean
   printf '2.0\n' > "$b/debian-binary"
   ( cd "$b/control" && tar $T -czf ../control.tar.gz . )
   ( cd "$b/data"    && tar $T -czf ../data.tar.gz    . )
@@ -181,25 +288,34 @@ pack() { # $1 builddir  $2 ipkname
   cp "$b/control/prerm"    "$b/pmPreRemove.script"
   chmod 0755 "$b/pmPostInstall.script" "$b/pmPreRemove.script"
   # webos-internals ar member order: debian-binary, data.tar.gz, control.tar.gz, pm scripts
-  ( cd "$b" && "$AR" rc "$OUT/$name" debian-binary data.tar.gz control.tar.gz \
+  ( cd "$b" && "$AR" rc "$outdir/$name" debian-binary data.tar.gz control.tar.gz \
         pmPostInstall.script pmPreRemove.script )
-  echo "  built $name"
+  echo "  built ${outdir#"$OUT"/}/$name"
 }
 
-############################# browser-tls13 #############################
+############################# browser-tls13 (per device) #############################
 if want browser; then
 ID=org.webosinternals.browser-tls13
-B="$OUT/_b_tls"; APPDIR="$B/data/usr/palm/applications/$ID"; F="$APPDIR/files"
+for dev in $DEVICES; do
+bs="$(browserserver_for "$dev")" || bs=""
+if [ -z "$bs" ]; then
+  echo "  browser-tls13: SKIP $dev -- no stock BrowserServer (put one at devices/$dev/BrowserServer.bin)"
+  continue
+fi
+PRODUCT="$(dev_product "$dev")"
+STOCK_BS_MD5="$(md5sum "$bs" | cut -d' ' -f1)"   # this device's stock, for the postinst NOTE
+B="$OUT/_b_tls_$dev"; rm -rf "$B"; APPDIR="$B/data/usr/palm/applications/$ID"; F="$APPDIR/files"
 mkdir -p "$B/control" "$F/ssl11"
 install -m0644 "$LIBSSL"    "$F/ssl11/libssl.so.1.1"
 install -m0644 "$LIBCRYPTO" "$F/ssl11/libcrypto.so.1.1"
 install -m0644 "$LIBCOMPAT" "$F/ssl11/libssl_compat.so"
 install -m0644 "$LIBCURL"   "$F/ssl11/libcurl.so.4.8.0"
 # ship the RPATH'd BrowserServer (DT_RPATH=/usr/lib/ssl11 + libssl_compat as NEEDED)
-cp "$BROWSERSERVER" "$F/BrowserServer.rpath"; chmod 0644 "$F/BrowserServer.rpath"
+cp "$bs" "$F/BrowserServer.rpath"; chmod 0644 "$F/BrowserServer.rpath"
 patchelf --force-rpath --set-rpath /usr/lib/ssl11 "$F/BrowserServer.rpath"
 patchelf --add-needed libssl_compat.so "$F/BrowserServer.rpath"
 RPATH_BS_MD5=$(md5sum "$F/BrowserServer.rpath" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
+echo "  [$dev] $PRODUCT: stock $STOCK_BS_MD5 -> RPATH'd $RPATH_BS_MD5"
 # app metadata (headless / hidden)
 cat > "$APPDIR/appinfo.json" <<EOF
 { "title":"Browser TLS 1.3", "id":"$ID", "version":"$TLSVER", "vendor":"WebOS Internals",
@@ -214,11 +330,11 @@ Package: $ID
 Version: $TLSVER
 Architecture: $ARCH
 Maintainer: $MAINT
-Description: Modern TLS 1.2/1.3 for the stock webOS TouchPad browser
+Description: Modern TLS 1.2/1.3 for the stock browser on $PRODUCT
 Section: System
 Priority: optional
 Depends:
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Browser TLS 1.3", "FullDescription":"Adds a process-private OpenSSL 1.1.1w + curl(zlib) under /usr/lib/ssl11 and points the stock BrowserServer at it via RPATH, so the 2011 browser can reach modern TLS 1.2/1.3 sites. Requires a current /etc/ssl/certs/ca-certificates.crt (Mozilla ca-certificates).", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Browser TLS 1.3 ($dev)", "FullDescription":"Adds a process-private OpenSSL 1.1.1w + curl(zlib) under /usr/lib/ssl11 and points the stock $PRODUCT BrowserServer at it via RPATH, so the 2011 browser can reach modern TLS 1.2/1.3 sites. Requires a current /etc/ssl/certs/ca-certificates.crt (Mozilla ca-certificates).", "License":"OpenSSL/curl" }
 EOF
 
 cat > "$B/control/postinst" <<EOF
@@ -293,7 +409,8 @@ start browserserver 2>/dev/null || true
 exit 0
 EOF
 chmod 0755 "$B/control/postinst" "$B/control/prerm"
-pack "$B" "${ID}_${TLSVER}_${ARCH}.ipk"
+pack "$B" "${ID}_${TLSVER}_${ARCH}.ipk" "$OUT/$dev"
+done  # for dev in $DEVICES
 fi  # want browser
 
 ############################# ntpdate-sync #############################
@@ -315,7 +432,7 @@ Package: $ID2
 Version: $NTPVER
 Architecture: $ARCH
 Maintainer: $MAINT
-Description: NTP clock sync for webOS TouchPad
+Description: NTP clock sync for legacy webOS (2.2.4 / 3.0.5)
 Section: System
 Priority: optional
 Depends:
@@ -374,7 +491,7 @@ Package: $ID3
 Version: $CURLVER
 Architecture: $ARCH
 Maintainer: $MAINT
-Description: Modern command-line curl (7.88.1, TLS 1.2/1.3) for the webOS TouchPad
+Description: Modern command-line curl (7.88.1, TLS 1.2/1.3) for legacy webOS (2.2.4 / 3.0.5)
 Section: System
 Priority: optional
 Depends:
@@ -434,20 +551,27 @@ chmod 0755 "$B3/control/postinst" "$B3/control/prerm"
 pack "$B3" "${ID3}_${CURLVER}_${ARCH}.ipk"
 fi  # want curl
 
-############################# luna-tls13 #############################
+############################# luna-tls13 (per device) #############################
 if want luna; then
 # Routes the app WebKit host (LunaSysMgr / WebAppMgr -- where Mojo/Enyo XHR runs) at
-# /usr/lib/ssl11. No payload: the postinst edits the LunaSysMgr upstart launcher.
-# REQUIRES browser-tls13 (for /usr/lib/ssl11); REBOOT after install.
+# /usr/lib/ssl11. On webOS 2.x it's PAYLOAD-FREE: the postinst just edits the LunaSysMgr
+# upstart launcher. On webOS 3.0.5 (LunaCE) it ALSO ships env-scrub wrappers
+# (media-pipeline / setcpushares-pdk / setcpushares-task). REQUIRES browser-tls13; REBOOT after.
 ID4=org.webosinternals.luna-tls13
-B4="$OUT/_b_luna"; APPDIR4="$B4/data/usr/palm/applications/$ID4"; F4="$APPDIR4/files"
+CROSSGCC=/opt/PalmPDK/arm-gcc/bin/arm-none-linux-gnueabi-gcc
+for dev in $DEVICES; do
+fam="$(dev_webos "$dev")"; PRODUCT="$(dev_product "$dev")"
+B4="$OUT/_b_luna_$dev"; rm -rf "$B4"; APPDIR4="$B4/data/usr/palm/applications/$ID4"; F4="$APPDIR4/files"
 mkdir -p "$B4/control" "$APPDIR4" "$F4"
+echo "  [$dev] $PRODUCT: luna-tls13 (webOS $fam -- $([ "$fam" = 3 ] && echo 'launcher patch + LunaCE env-scrub wrappers' || echo 'launcher patch only'))"
+# webOS 3.x (LunaCE) needs env-scrub wrappers; webOS 2.x does not (no LunaCE; setcpushares-pdk
+# doesn't exist). 2.x therefore ships NO wrapper payloads -- launcher patch only.
+if [ "$fam" = 3 ]; then
 # media-pipeline env-scrub wrapper payload: compile from source with the PalmPDK
 # cross-gcc when present (reproducible); else fall back to the committed prebuilt so
 # luna still builds on a host without the toolchain (e.g. the Mac re-wrap path).
 MPWRAP_SRC="$BASE/media-pipeline-wrap.c"
 MPWRAP_BIN="$BASE/media-pipeline-wrap.bin"
-CROSSGCC=/opt/PalmPDK/arm-gcc/bin/arm-none-linux-gnueabi-gcc
 if [ -x "$CROSSGCC" ] && [ -f "$MPWRAP_SRC" ]; then
     "$CROSSGCC" -static -Os -o "$F4/media-pipeline.wrap" "$MPWRAP_SRC"
     "${CROSSGCC%gcc}strip" "$F4/media-pipeline.wrap" 2>/dev/null || true
@@ -492,6 +616,15 @@ else
     exit 1
 fi
 chmod 0644 "$F4/setcpushares-task.wrap"
+fi  # fam=3 : LunaCE env-scrub wrapper payloads
+# luna-tls13 control text differs by family (3.x mentions the wrappers).
+if [ "$fam" = 3 ]; then
+  LUNA_DESC="Modern TLS 1.2/1.3 for webOS apps (Mojo/Enyo WebKit) on $PRODUCT"
+  LUNA_FULL="Routes the app WebKit host (LunaSysMgr/WebAppMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. On webOS 3.0.5 (LunaCE) it also installs env-scrub wrappers (media-pipeline at /usr/bin, setcpushares-pdk and setcpushares-task at /usr/sbin) so HTML5 media, PDK apps and App-Manager installs keep working under the ssl11 launcher env. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot."
+else
+  LUNA_DESC="Modern TLS 1.2/1.3 for webOS apps (Mojo/Enyo WebKit) on $PRODUCT"
+  LUNA_FULL="Routes the app WebKit host (LunaSysMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot."
+fi
 cat > "$APPDIR4/appinfo.json" <<EOF
 { "title":"Luna TLS 1.3", "id":"$ID4", "version":"$LUNAVER", "vendor":"WebOS Internals",
   "type":"web", "main":"index.html", "icon":"icon.png", "removable":true,
@@ -505,11 +638,11 @@ Package: $ID4
 Version: $LUNAVER
 Architecture: $ARCH
 Maintainer: $MAINT
-Description: Modern TLS 1.2/1.3 for webOS apps (Mojo/Enyo WebKit)
+Description: $LUNA_DESC
 Section: System
 Priority: optional
-Depends:
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Luna TLS 1.3", "FullDescription":"Routes the app WebKit host (LunaSysMgr/WebAppMgr) through the OpenSSL 1.1.1w stack under /usr/lib/ssl11 so in-app HTTPS (Mojo/Enyo XHR, enyo.WebService) negotiates TLS 1.2/1.3. Also installs a tiny wrapper at /usr/bin/media-pipeline that keeps the ssl11 stack out of the HTML5 media worker (which never needed it), so streaming and local media (Pandora/Plex/drPodder and stock Music) play reliably instead of wedging after one track. Also installs a tiny wrapper at /usr/sbin/setcpushares-pdk that keeps the ssl11 launcher env (LD_BIND_NOW, compat-shim preload) out of PDK app launches, so PDK apps -- incl. QupZilla and the nizovn Qt5 stack -- launch normally, including under LunaCE. REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11). Edits the LunaSysMgr upstart launcher; REBOOT after install. Recovery: novacomd survives a UI failure -- restore /var/luna/LunaSysMgr.tls13-orig to /etc/event.d/LunaSysMgr and reboot.", "License":"OpenSSL/curl" }
+Depends: org.webosinternals.browser-tls13
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Luna TLS 1.3 ($dev)", "FullDescription":"$LUNA_FULL", "License":"OpenSSL/curl" }
 EOF
 
 # postinst: patch the LunaSysMgr launcher to load ssl11 (+ compat shim). Backup goes
@@ -528,6 +661,10 @@ if [ ! -f "$COMPAT" ]; then
     echo "luna-tls13 ERROR: /usr/lib/ssl11 stack not found -- install org.webosinternals.browser-tls13 first. Not patching."
     exit 1
 fi
+EOF
+# webOS 3.0.5 (LunaCE) only: the three env-scrub wrapper blocks. webOS 2.x skips them.
+if [ "$fam" = 3 ]; then
+cat >> "$B4/control/postinst" <<'EOF'
 
 # ---- media-pipeline env-scrub wrapper (INDEPENDENT of the launcher patch) ----
 # The HTML5 media worker (/usr/bin/media-pipeline, fork+exec'd by WebAppMgr) inherits
@@ -664,8 +801,11 @@ else
     echo "luna-tls13 WARNING: $ST has no shebang and no .real exists -- looks like a stray wrapper, not the stock script. NOT wrapping."
 fi
 # ---- end setcpushares-task fix -------------------------------------------------
+EOF
+fi  # fam=3 : LunaCE env-scrub wrapper postinst blocks
+cat >> "$B4/control/postinst" <<'EOF'
 
-# ---- LunaSysMgr launcher: route app WebKit through ssl11 (unchanged from 1.1.0) --
+# ---- LunaSysMgr launcher: route app WebKit through ssl11 --
 if grep -q 'ssl11/libssl_compat.so' "$L" 2>/dev/null && grep -q 'LD_BIND_NOW=1' "$L" 2>/dev/null; then
     echo "luna-tls13: LunaSysMgr launcher already patched (ssl11 + LD_BIND_NOW). REBOOT to activate the media fix if you have not rebooted since this install."
     exit 0
@@ -707,6 +847,10 @@ cat > "$B4/control/prerm" <<'EOF'
 #!/bin/sh
 mount -o remount,rw / 2>/dev/null || true
 L=/etc/event.d/LunaSysMgr
+EOF
+# webOS 3.0.5 (LunaCE) only: restore the three env-scrub wrappers. webOS 2.x skips them.
+if [ "$fam" = 3 ]; then
+cat >> "$B4/control/prerm" <<'EOF'
 
 # restore media-pipeline: move the real binary back over the wrapper, drop the .real
 # roles. (.real is the untouched real binary; the /var/luna copy is a secondary backup.)
@@ -738,7 +882,9 @@ elif [ -f /var/luna/setcpushares-task.tls13-orig ]; then
     cp -f /var/luna/setcpushares-task.tls13-orig "$ST"; chmod 755 "$ST"
 fi
 rm -f /var/luna/setcpushares-task.tls13-orig
-
+EOF
+fi  # fam=3 : LunaCE env-scrub wrapper prerm restores
+cat >> "$B4/control/prerm" <<'EOF'
 if [ -f /var/luna/LunaSysMgr.tls13-orig ]; then
     cp -f /var/luna/LunaSysMgr.tls13-orig "$L"
     rm -f /var/luna/LunaSysMgr.tls13-orig
@@ -756,7 +902,8 @@ fi
 exit 0
 EOF
 chmod 0755 "$B4/control/postinst" "$B4/control/prerm"
-pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk"
+pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk" "$OUT/$dev"
+done  # for dev in $DEVICES
 fi  # want luna
 
 ############################# mail-tls13 #############################
@@ -972,7 +1119,15 @@ fi  # want mail
 # this package out.
 if want imaptagfix; then
   ID6=org.webosinternals.mojomail-imap-tagfix
-  B6="$OUT/_b_imaptag"; APPDIR6="$B6/data/usr/palm/applications/$ID6"
+for dev in $DEVICES; do
+  IMAP_STOCK="$(dev_imap_stock_md5 "$dev")"; IMAP_PATCHED="$(dev_imap_patched_md5 "$dev")"; IMAP_OFF="$(dev_imap_offset "$dev")"
+  PRODUCT="$(dev_product "$dev")"
+  if [ -z "$IMAP_STOCK" ] || [ -z "$IMAP_PATCHED" ] || [ -z "$IMAP_OFF" ]; then
+    echo "  mojomail-imap-tagfix: SKIP $dev -- no known mojomail-imap tag offset/md5 (add it to dev_imap_* in the registry)"
+    continue
+  fi
+  echo "  [$dev] $PRODUCT: mojomail-imap-tagfix (offset $IMAP_OFF, stock $IMAP_STOCK -> patched $IMAP_PATCHED)"
+  B6="$OUT/_b_imaptag_$dev"; APPDIR6="$B6/data/usr/palm/applications/$ID6"
   rm -rf "$B6"; mkdir -p "$B6/control" "$APPDIR6"
   cat > "$APPDIR6/appinfo.json" <<EOF
 { "title":"Mojomail IMAP Tag Fix", "id":"$ID6", "version":"$IMAPTAGVER", "vendor":"WebOS Internals",
@@ -990,14 +1145,15 @@ Maintainer: $MAINT
 Description: Patch mojomail-imap's IMAP command tag (~A -> AA) for strict modern servers
 Section: System
 Priority: optional
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Mojomail IMAP Tag Fix", "FullDescription":"Optional, standalone one-byte patch of /usr/bin/mojomail-imap: changes its hard-coded IMAP command tag prefix from ~A to AA. mojomail tags IMAP commands ~A1, ~A2, ...; some strict modern servers (e.g. Fastmail) reject a tilde in the tag with an untagged BAD response, which the stock client can never match to its request, so IMAP account validation hangs and fails (error 3099). AA1.. is accepted by every server. Independent of the TLS packages -- take it or leave it. md5-guarded to the stock webOS 3.0.5 binary, backed up to /var/luna, restored on removal. Useful together with org.webosinternals.mail-tls13 (which provides modern TLS for the mail transports).", "License":"Public Domain" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Mojomail IMAP Tag Fix ($dev)", "FullDescription":"Optional, standalone one-byte patch of /usr/bin/mojomail-imap on $PRODUCT: changes its hard-coded IMAP command tag prefix from ~A to AA. mojomail tags IMAP commands ~A1, ~A2, ...; some strict modern servers (e.g. Fastmail) reject a tilde in the tag with an untagged BAD response, which the stock client can never match to its request, so IMAP account validation hangs and fails (error 3099). AA1.. is accepted by every server. Independent of the TLS packages -- take it or leave it. md5-guarded to the stock binary, backed up to /var/luna, restored on removal. Useful together with org.webosinternals.mail-tls13 (which provides modern TLS for the mail transports).", "License":"Public Domain" }
 EOF
 
   cat > "$B6/control/postinst" <<EOF
 #!/bin/sh
 IMAPBIN=/usr/bin/mojomail-imap
-STOCK_IMAP_MD5=9f6489ae48fc131733c1a88a9aa1056a
-PATCHED_IMAP_MD5=78956f6daf374a9a940e914459f234c3
+STOCK_IMAP_MD5=$IMAP_STOCK
+PATCHED_IMAP_MD5=$IMAP_PATCHED
+IMAP_OFF=$IMAP_OFF
 EOF
   cat >> "$B6/control/postinst" <<'EOF'
 [ -z "$IPKG_OFFLINE_ROOT" ] && IPKG_OFFLINE_ROOT=/media/cryptofs/apps
@@ -1011,7 +1167,7 @@ if [ "$im" = "$STOCK_IMAP_MD5" ]; then
     # fails ETXTBSY while mojomail-imap is running (dbus-activated); rename(2) replaces the
     # dir entry safely (the live process keeps the old inode until it respawns -- killall below).
     cp -f "$IMAPBIN" "$IMAPBIN.tagfixnew"
-    printf 'A' | dd of="$IMAPBIN.tagfixnew" bs=1 seek=991784 count=1 conv=notrunc 2>/dev/null
+    printf 'A' | dd of="$IMAPBIN.tagfixnew" bs=1 seek=$IMAP_OFF count=1 conv=notrunc 2>/dev/null
     nm=$(md5sum "$IMAPBIN.tagfixnew" | cut -d' ' -f1)
     if [ "$nm" = "$PATCHED_IMAP_MD5" ]; then
         chmod 755 "$IMAPBIN.tagfixnew"; mv -f "$IMAPBIN.tagfixnew" "$IMAPBIN"
@@ -1042,7 +1198,8 @@ killall mojomail-imap 2>/dev/null
 exit 0
 EOF
   chmod 0755 "$B6/control/postinst" "$B6/control/prerm"
-  pack "$B6" "${ID6}_${IMAPTAGVER}_${ARCH}.ipk"
+  pack "$B6" "${ID6}_${IMAPTAGVER}_${ARCH}.ipk" "$OUT/$dev"
+done  # for dev in $DEVICES
 fi  # want imaptagfix
 
 ############################# downloadmgr-tls13 #############################
@@ -1065,14 +1222,22 @@ fi  # want imaptagfix
 # tls13's OpenSSL); DT_RPATH so it also covers libcurl's transitive libssl load.
 if want downloadmgr; then
 ID7=org.webosinternals.downloadmgr-tls13
-B7="$OUT/_b_dlmgr"; APPDIR7="$B7/data/usr/palm/applications/$ID7"; F7="$APPDIR7/files"
-rm -rf "$B7"
+for dev in $DEVICES; do
+dl="$(downloadmgr_for "$dev")" || dl=""
+if [ -z "$dl" ]; then
+  echo "  downloadmgr-tls13: SKIP $dev -- no stock LunaDownloadMgr (put one at devices/$dev/LunaDownloadMgr.bin)"
+  continue
+fi
+PRODUCT="$(dev_product "$dev")"
+STOCK_DLMGR_MD5="$(md5sum "$dl" | cut -d' ' -f1)"   # this device's stock, for the postinst NOTE
+B7="$OUT/_b_dlmgr_$dev"; rm -rf "$B7"; APPDIR7="$B7/data/usr/palm/applications/$ID7"; F7="$APPDIR7/files"
 mkdir -p "$B7/control" "$F7/ssl11dl"
 install -m0644 "$MAIL_LIBCURL" "$F7/ssl11dl/libcurl.so.4.5.0"
 # ship the RPATH'd LunaDownloadMgr
-cp "$DLMGRBIN" "$F7/LunaDownloadMgr.rpath"; chmod 0644 "$F7/LunaDownloadMgr.rpath"
+cp "$dl" "$F7/LunaDownloadMgr.rpath"; chmod 0644 "$F7/LunaDownloadMgr.rpath"
 patchelf --force-rpath --set-rpath '/usr/lib/ssl11dl:/usr/lib/ssl11' "$F7/LunaDownloadMgr.rpath"
 RPATH_DLMGR_MD5=$(md5sum "$F7/LunaDownloadMgr.rpath" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
+echo "  [$dev] $PRODUCT: stock $STOCK_DLMGR_MD5 -> RPATH'd $RPATH_DLMGR_MD5"
 
 cat > "$APPDIR7/appinfo.json" <<EOF
 { "title":"Download Manager TLS 1.3", "id":"$ID7", "version":"$DOWNVER", "vendor":"WebOS Internals",
@@ -1087,16 +1252,16 @@ Package: $ID7
 Version: $DOWNVER
 Architecture: $ARCH
 Maintainer: $MAINT
-Description: Modern TLS 1.2/1.3 for the webOS Download Manager (downloads and uploads)
+Description: Modern TLS 1.2/1.3 for the webOS Download Manager on $PRODUCT (downloads and uploads)
 Section: System
 Priority: optional
 Depends: org.webosinternals.browser-tls13
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Download Manager TLS 1.3", "FullDescription":"Routes the system Download Manager (com.palm.downloadmanager / /usr/bin/LunaDownloadMgr) through modern TLS so background downloads AND uploads reach today's HTTPS servers. LunaDownloadMgr does all its transfers via libcurl and links no OpenSSL directly, so it is simply RPATH'd (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + a baked-in CA bundle) -- no patch to the binary's code. The baked CA bundle is required because the daemon hard-codes an OpenSSL-0.9.8-hashed CAPATH that OpenSSL 1.1 cannot read. Hardware-proven: downloads negotiate TLS 1.3, modern/Let's Encrypt certificates validate, and multipart uploads return 200. Bonus: downloads can now send arbitrary request headers (Authorization: Bearer <JWT>, X-Auth-Token, ...) via the cookieHeader multi-line convention (uploads already accept a customHttpHeaders array). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11 OpenSSL); a current /etc/ssl/certs/ca-certificates.crt (e.g. com.palm.rootcertsupdate) and a correct clock (org.webosinternals.ntpdate-sync) are needed for cert validation. Remove this BEFORE browser-tls13. No reboot needed.", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Download Manager TLS 1.3 ($dev)", "FullDescription":"Routes the system Download Manager (com.palm.downloadmanager / /usr/bin/LunaDownloadMgr) on $PRODUCT through modern TLS so background downloads AND uploads reach today's HTTPS servers. LunaDownloadMgr does all its transfers via libcurl and links no OpenSSL directly, so it is simply RPATH'd (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + a baked-in CA bundle) -- no patch to the binary's code. The baked CA bundle is required because the daemon hard-codes an OpenSSL-0.9.8-hashed CAPATH that OpenSSL 1.1 cannot read. On the TouchPad this is hardware-proven (downloads negotiate TLS 1.3, modern/Let's Encrypt certificates validate, multipart uploads return 200). Bonus: downloads can now send arbitrary request headers (Authorization: Bearer <JWT>, X-Auth-Token, ...) via the cookieHeader multi-line convention (uploads already accept a customHttpHeaders array). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11 OpenSSL); a current /etc/ssl/certs/ca-certificates.crt (e.g. com.palm.rootcertsupdate) and a correct clock (org.webosinternals.ntpdate-sync) are needed for cert validation. Remove this BEFORE browser-tls13. No reboot needed.", "License":"OpenSSL/curl" }
 EOF
 
 cat > "$B7/control/postinst" <<EOF
 #!/bin/sh
-STOCK_DLMGR_MD5="$DLMGR_STOCK_MD5"
+STOCK_DLMGR_MD5="$STOCK_DLMGR_MD5"
 RPATH_DLMGR_MD5="$RPATH_DLMGR_MD5"
 PID="$ID7"
 EOF
@@ -1167,7 +1332,11 @@ start LunaDownloadMgr 2>/dev/null || true
 exit 0
 EOF
 chmod 0755 "$B7/control/postinst" "$B7/control/prerm"
-pack "$B7" "${ID7}_${DOWNVER}_${ARCH}.ipk"
+pack "$B7" "${ID7}_${DOWNVER}_${ARCH}.ipk" "$OUT/$dev"
+done  # for dev in $DEVICES
 fi  # want downloadmgr
 
-echo "=== output ==="; ls -l "$OUT"/*.ipk
+echo "=== output ==="
+ls -1 "$OUT"/*.ipk 2>/dev/null | sed 's#^#  #'
+for d in $ALL_DEVICES; do [ -d "$OUT/$d" ] && ls -1 "$OUT/$d"/*.ipk 2>/dev/null | sed "s#^#  #"; done
+true
