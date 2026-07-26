@@ -1,7 +1,10 @@
 .DS_Store
 ipks/_build_*
 ipks/_b_*
+ipks/*/_b_*
 BrowserServer.bin
 LunaDownloadMgr.bin
+devices/*/BrowserServer.bin
+devices/*/LunaDownloadMgr.bin
 ipks-backup/
 analysis/

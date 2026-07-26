@@ -4,9 +4,11 @@
 # Flags PASS / WARN / FAIL for each thing that varies across devices.
 
 P() { printf '%-22s %s\n' "$1" "$2"; }
-STOCK_BS=0786bdf698220aa82a90838e30355c9f      # stock 3.0.5 BrowserServer
-RPATH_BS=a56bf4febbb961ce5249ed78caa0bf33      # our RPATH'd BrowserServer
-WK_KNOWN=3d90fd6e33e1f382814c653c0e63a6eb      # libWebKitLuna whose offsets we fixed (0xD8 / 0x8)
+# Known-good md5s, space-separated across devices (topaz=TouchPad 3.0.5, mantaray=Pre 3 2.2.4).
+STOCK_BS="0786bdf698220aa82a90838e30355c9f 44d2b0ce0fa4f1e0c660039676df5e36"   # stock BrowserServer(s)
+RPATH_BS="a56bf4febbb961ce5249ed78caa0bf33 4cb0c21ee21adb7dc46d4cad09810f5b"   # our RPATH'd BrowserServer(s)
+WK_KNOWN="3d90fd6e33e1f382814c653c0e63a6eb aacdb3273c0bf6bb70a647340382ff4c"   # libWebKitLuna with verified 0xD8/0x8 offsets
+inlist() { case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 md5() { md5sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
 echo "===== webOS / device ====="
@@ -33,9 +35,9 @@ BS_OK=0
 # The authoritative functional check is the "on ssl11 (1.1)" maps + the curl test below.
 if [ -z "$bm" ]; then
   P "BrowserServer:" "FAIL missing /usr/bin/BrowserServer"
-elif [ "$bm" = "$STOCK_BS" ]; then
+elif inlist "$bm" "$STOCK_BS"; then
   P "BrowserServer:" "FAIL still STOCK ($bm) -- RPATH swap did NOT apply (postinst skipped or not installed)"
-elif [ "$bm" = "$RPATH_BS" ]; then
+elif inlist "$bm" "$RPATH_BS"; then
   P "BrowserServer:" "PASS RPATH'd, reference build ($bm)"; BS_OK=1
 else
   P "BrowserServer:" "PASS RPATH'd, custom build ($bm) -- not the reference a56bf4 (rebuilt patchelf?); confirm via ssl11 maps below"; BS_OK=1
@@ -44,7 +46,7 @@ P "  .tls13-orig backup:" "$(md5 /usr/bin/BrowserServer.tls13-orig)"
 
 echo "===== libWebKitLuna (struct-offset compatibility) ====="
 wm=$(md5 /usr/lib/libWebKitLuna.so)
-if [ "$wm" = "$WK_KNOWN" ]; then
+if inlist "$wm" "$WK_KNOWN"; then
   P "libWebKitLuna:" "PASS known build ($wm) -- offsets 0xD8/0x8 match"
 else
   P "libWebKitLuna:" "WARN DIFFERENT build ($wm) -- its hardcoded SSL struct offsets may NOT be 0xD8/0x8; the custom OpenSSL could crash. PULL THIS FILE for analysis."
