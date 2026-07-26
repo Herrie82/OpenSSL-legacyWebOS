@@ -38,23 +38,23 @@ OUT="$BASE/ipks"; ARCH="armv7"
 #   devices/<device>/BrowserServer.bin     (stock /usr/bin/BrowserServer to RPATH)
 #   devices/<device>/LunaDownloadMgr.bin   (stock /usr/bin/LunaDownloadMgr, phase 3)
 # (legacy top-level BrowserServer.bin is still honored as topaz's, for back-compat.)
-# webOS device codenames (from the webOS Doctor build names):
-#   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  broadway=Pre 2(2.2.4)  roadrunner=Veer(2.2.4)
-ALL_DEVICES="topaz mantaray broadway roadrunner"
+# webOS device codenames (from palm-build-info BUILDNAME):
+#   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  roadrunner=Pre 2(2.2.4)  broadway=Veer(2.2.4)
+ALL_DEVICES="topaz mantaray roadrunner broadway"
 dev_product() { case "$1" in
   topaz)      echo "HP TouchPad (webOS 3.0.5)";;
   mantaray)   echo "HP Pre 3 (webOS 2.2.4)";;
-  broadway)   echo "Palm Pre 2 (webOS 2.2.4)";;
-  roadrunner) echo "HP Veer (webOS 2.2.4)";;
+  roadrunner) echo "Palm Pre 2 (webOS 2.2.4)";;
+  broadway)   echo "HP Veer (webOS 2.2.4)";;
   *)          echo "webOS device ($1)";;
 esac; }
 # Expected STOCK BrowserServer md5 -- used ONLY to verify a novacom AUTO-FETCH grabbed
 # a clean/unpatched binary. Empty => skip that guard (trust a supplied .bin).
 dev_bs_md5() { case "$1" in
-  topaz)      echo "0786bdf698220aa82a90838e30355c9f";;
-  mantaray)   echo "44d2b0ce0fa4f1e0c660039676df5e36";;
-  broadway)   echo "";;   # drop in devices/broadway/BrowserServer.bin (md5 optional)
-  roadrunner) echo "";;   # drop in devices/roadrunner/BrowserServer.bin (md5 optional)
+  topaz)      echo "0786bdf698220aa82a90838e30355c9f";;   # TouchPad
+  mantaray)   echo "44d2b0ce0fa4f1e0c660039676df5e36";;   # Pre 3
+  roadrunner) echo "d7dcd8a05995859c36cf8e9db3c13b25";;   # Pre 2
+  broadway)   echo "6b3eddf2581ed869beedba253bb35227";;   # Veer
   *)          echo "";;
 esac; }
 dev_novacom() { case "$1" in   # novacom -l device-id token, for auto-fetch matching
@@ -74,29 +74,35 @@ dev_webos() { case "$1" in
 esac; }
 # Expected stock LunaDownloadMgr md5 (downloadmgr-tls13) -- verify auto-fetch only; empty=>skip.
 dev_dlmgr_md5() { case "$1" in
-  topaz)      echo "587f1a9f51c3e6e1c905e44e55ea6193";;
-  mantaray)   echo "44035016e79c7787017c7e218aef00cc";;
-  broadway)   echo "";;
-  roadrunner) echo "";;
+  topaz)      echo "587f1a9f51c3e6e1c905e44e55ea6193";;   # TouchPad
+  mantaray)   echo "44035016e79c7787017c7e218aef00cc";;   # Pre 3
+  roadrunner) echo "444b88f2b2a01278692de74848af5b92";;   # Pre 2
+  broadway)   echo "549fa933af41e043257ef8f2fbc655b7";;   # Veer
   *)          echo "";;
 esac; }
 # mojomail-imap-tagfix: stock md5 / patched md5 / file offset of the "~A"->"AA" tag byte.
 # All three are per-build (offset moves between webOS builds). Empty stock md5 => device
 # skipped (unknown offset). Recompute for a new device: find the single "~A", flip 0x7e->0x41.
 dev_imap_stock_md5()   { case "$1" in
-  topaz)    echo "9f6489ae48fc131733c1a88a9aa1056a";;
-  mantaray) echo "291dbc5f6cc52392e4d653d39e528226";;
-  *)        echo "";;
+  topaz)      echo "9f6489ae48fc131733c1a88a9aa1056a";;   # TouchPad
+  mantaray)   echo "291dbc5f6cc52392e4d653d39e528226";;   # Pre 3
+  roadrunner) echo "b38230f8a0bc26c932caf7050fb93297";;   # Pre 2
+  broadway)   echo "b308c86c598d66d39403bca73edfb366";;   # Veer
+  *)          echo "";;
 esac; }
 dev_imap_patched_md5() { case "$1" in
-  topaz)    echo "78956f6daf374a9a940e914459f234c3";;
-  mantaray) echo "9cf606e11683d35b8f8da2145a23afc6";;
-  *)        echo "";;
+  topaz)      echo "78956f6daf374a9a940e914459f234c3";;   # TouchPad
+  mantaray)   echo "9cf606e11683d35b8f8da2145a23afc6";;   # Pre 3
+  roadrunner) echo "3d614527bcaada9820e753b5eb600a17";;   # Pre 2
+  broadway)   echo "00a991bbe527ff9e8d45fb0bfefd90f4";;   # Veer
+  *)          echo "";;
 esac; }
 dev_imap_offset()      { case "$1" in
-  topaz)    echo "991784";;
-  mantaray) echo "988724";;
-  *)        echo "";;
+  topaz)      echo "991784";;   # TouchPad
+  mantaray)   echo "988724";;   # Pre 3
+  roadrunner) echo "988740";;   # Pre 2
+  broadway)   echo "988620";;   # Veer
+  *)          echo "";;
 esac; }
 is_device() { case " $ALL_DEVICES " in *" $1 "*) return 0;; *) return 1;; esac; }
 
