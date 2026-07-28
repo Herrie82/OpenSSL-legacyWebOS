@@ -6,20 +6,62 @@ stock mojomail binary ships in its own optional package and is documented separa
 [mojomail-changes.md](mojomail-changes.md).
 
 ```sh
-./build-ipks.sh                 # build everything into ipks/
-./build-ipks.sh mail            # build one or more
-                                # (browser | luna | curl | ntp | mail | imaptagfix | all)
+./build-ipks.sh                          # every device you have binaries for, all packages
+./build-ipks.sh mail                     # one or more packages, default device set
+./build-ipks.sh topaz browser            # one device, one package
+./build-ipks.sh phone                    # the merged all-three-phones set -> ipks/phone/
+./build-ipks.sh alldevices               # topaz + mantaray + roadrunner + broadway
 ```
+
+Arguments are **order-free** and each is either a device or a package:
+
+- **devices** — `topaz` (HP TouchPad 3.0.5), `mantaray` (Pre 3), `roadrunner` (Pre 2),
+  `broadway` (Veer); plus `alldevices` (all four, separately) and `phone` (see below).
+- **packages** — `browser | luna | curl | ntp | mail | imaptagfix | downloadmgr | all`
+  (default `all`).
+
+With **no device given**, the default set is every device whose stock binaries are
+actually present (`devices/<dev>/BrowserServer.bin`, or `BrowserServer.bin` at the repo
+root for `topaz`) — so a plain `./build-ipks.sh` just works for whatever the maintainer
+has dropped in. Output goes to `ipks/<device>/`, except the device-independent
+`curl`/`ntp`/`mail` packages, which land in `ipks/` top level.
 
 Paths resolve relative to the script (the repo checkout), so it runs from wherever you
 clone it. It **fails fast with a descriptive error** if a prerequisite is missing. The
 package selector lets you (re)build `mail` without a clean stock device attached — handy
 because the browser package needs a stock `BrowserServer` and mail does not.
 
+## The `phone` target (one ipk for all three phones)
+
+`./build-ipks.sh phone` is not a device — it's a **multi-board build**. It emits one ipk
+per package, named `*-phone` (`org.webosinternals.browser-tls13-phone` and so on), each
+bundling every phone board's pieces and selecting at install time from
+`/etc/prefs/properties/machineName`, falling back to matching a known board name in
+`/etc/palm-build-info`. An unrecognised board — a TouchPad included — **exits non-zero
+before touching anything**.
+
+This exists because the four per-board builds share the same `Package` **and** `Version`
+**and** `Architecture`, which is exactly ipkg's dedupe key — so they can never coexist in
+a feed, and a Pre 3 could be handed the topaz build. Distinct names fix it. Full
+reasoning, and the sizes that make bundling cheap, are in
+[`ipks/README.md`](ipks/README.md).
+
+**It builds without the stock Palm binaries.** `prebuilt_rpath()` falls back to extracting
+the already-RPATH'd binary out of the committed per-board ipk in `ipks/<board>/` (verified
+bit-identical to all six shipped binaries), so `./build-ipks.sh phone` works on any
+checkout — you still need GNU `ar`. Keep `ipks/{topaz,mantaray,roadrunner,broadway}/` in
+the repo for this reason.
+
+Single-board targets are unaffected by any of this: `tgt_suffix`/`tgt_boards` return
+`""`/`"$dev"` for a real board, so `ipks/topaz/` keeps its historical flat payload
+filenames.
+
 The packages: the four core TLS packages `browser-tls13`, `luna-tls13`, `curl-tls13`,
 `ntpdate-sync`; the mail TLS package `mail-tls13` (its own large section below — it needs a
-cross-compiled libcurl); and one **optional, standalone** package `mojomail-imap-tagfix` (a
-one-byte mojomail-imap patch, kept separate so it can be taken or left independently).
+cross-compiled libcurl); `downloadmgr-tls13`, which RPATHs `/usr/bin/LunaDownloadMgr` onto
+the ssl11 curl (built like `browser`, from that device's stock binary — no code patch);
+and one **optional, standalone** package `mojomail-imap-tagfix` (a one-byte mojomail-imap
+patch, kept separate so it can be taken or left independently).
 
 ## Prerequisites (all packages)
 
@@ -29,10 +71,14 @@ one-byte mojomail-imap patch, kept separate so it can be taken or left independe
   have long names; BSD `ar` (stock macOS) writes an incompatible long-name format the
   device's ipkg/appinstaller can't read. On macOS: `brew install binutils`. On Linux
   the system `ar` is already GNU. The script aborts with a hint if it can't find GNU ar.
-- **`BrowserServer.bin`** — the stock 3.0.5 binary (md5 `0786bdf698220aa82a90838e30355c9f`)
-  at the repo root. If absent, the script **auto-fetches it over `novacom` from a
-  connected, factory/stock TouchPad** and verifies the md5. Only needed when building
-  `browser` (the selector skips this gate otherwise).
+- **Stock device binaries** — for `topaz`, `BrowserServer.bin` (md5
+  `0786bdf698220aa82a90838e30355c9f`) at the repo root; for the other boards,
+  `devices/<codename>/BrowserServer.bin` (and `LunaDownloadMgr.bin` for `downloadmgr`).
+  If absent for `topaz`, the script **auto-fetches it over `novacom` from a connected,
+  factory/stock TouchPad** and verifies the md5. These are **not committed** (`.gitignore`
+  covers `BrowserServer.bin`), so a fresh checkout has none — which is fine: only the
+  `browser`/`downloadmgr` packages need them, and the `phone` target reuses the committed
+  per-board ipks instead (see above).
 - Other inputs (`openssl-1.1.1w/`, `curl-7.88.1/`, `libssl_compat.so`, `ntpdate-sync`,
   and — for mail — `curl-mail/`) are committed in the repo.
 
@@ -355,11 +401,16 @@ Recovery for the browser/luna stack (if the UI ever fails to boot) is in the
 ## Repo layout
 
 ```
-build-ipks.sh          build the ipks ([browser|luna|curl|ntp|mail|imaptagfix|all]; default all)
+build-ipks.sh          build the ipks; args are order-free devices and/or packages
+                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone
+                       packages: browser|luna|curl|ntp|mail|imaptagfix|downloadmgr|all
 tls13-diag.sh          on-device diagnostic for the four-package stack (PASS/FAIL VERDICT)
 mail-tls13-diag.sh     on-device diagnostic for mail-tls13
 mojomail-changes.md    the single 1-byte change to a stock mojomail binary (the imaptagfix package)
 ipks/                  built packages + slim install-order README
+ipks/<codename>/       device-specific builds (browser, luna, downloadmgr, imaptagfix)
+ipks/phone/            merged all-three-phones set (*-phone names) — the feed-safe build
+devices/<codename>/    stock Palm binaries per board (not committed; see Prerequisites)
 openssl-1.1.1w/        OpenSSL 1.1.1w tree (libssl.so.1.1, libcrypto.so.1.1; ssl->ctx @0xD8, cert @0x8)
 curl-7.88.1/           curl 7.88.1 tree for browser/curl packages (libcurl.so.4.8.0, src/.libs/curl)
 curl-mail/lib/.libs/   curl 7.61.1 libcurl for mail (vs OpenSSL 1.1 headers, --enable-ares, --with-ca-bundle)

@@ -1,15 +1,35 @@
-# Modern TLS for the HP TouchPad (webOS 3.0.5)
+# Modern TLS for legacy webOS (TouchPad 3.0.5 & 2.2.4 phones)
 
-Bring TLS 1.2 / 1.3 to the HP TouchPad so it can actually connect to today's HTTPS
-sites — in the **stock browser**, in **apps** (Mojo/Enyo WebKit), and on the
-**command line** — without replacing the OS or changing the rest of the device's
-2011 TLS behaviour.
+Bring TLS 1.2 / 1.3 to legacy webOS devices so they can actually connect to today's
+HTTPS sites — in the **stock browser**, in **apps** (Mojo/Enyo WebKit), in the
+**download manager**, and on the **command line** — without replacing the OS or
+changing the rest of the device's 2011 TLS behaviour.
 
-webOS 3.0.5 ships **OpenSSL 0.9.8** (TLS 1.0 only). Modern servers refuse TLS 1.0,
+Legacy webOS ships **OpenSSL 0.9.8** (TLS 1.0 only). Modern servers refuse TLS 1.0,
 so the built-in browser, app `XMLHttpRequest`s, and `curl` can no longer reach
 them. This project installs a private, modern **OpenSSL 1.1.1w + curl 7.88.1**
 stack in `/usr/lib/ssl11` and points exactly the consumers you want at it, leaving
 the rest of the 2011 OS untouched.
+
+## Supported devices
+
+| Device | codename | webOS | Status |
+|---|---|---|---|
+| HP TouchPad | `topaz` | 3.0.5 | ✅ Hardware-verified |
+| HP Pre 3 | `mantaray` | 2.2.4 | ✅ Hardware-verified |
+| HP Veer | `broadway` | 2.2.4 | ⚠️ Built & published, untested on hardware |
+| Palm Pre 2 | `roadrunner` | 2.2.4 | ⚠️ Built & published, untested on hardware |
+
+The device-specific packages embed a patched copy of that device's own stock binary,
+so they are **built per device** and live in per-codename folders under
+[`ipks/`](ipks/). The three phones are additionally published as a **single merged
+set** in [`ipks/phone/`](ipks/phone/) (`*-phone` package names) that picks the right
+board at install time — that is the build a feed should carry. See
+[Which packages for which device](#packages).
+
+On the phones, **webOS 2.2.4 is a hard requirement**, not a recommendation: an
+un-upgraded Veer (2.2.0) or Pre 2 (2.1.0) has different stock binaries than these
+patches were built against. Get to 2.2.4 (Super Doctor) first.
 
 > **Installing?** Jump to [Packages & install order](#packages). The TL;DR also
 > lives in [`ipks/README.md`](ipks/README.md). **Building from source?** See
@@ -30,11 +50,15 @@ the rest of the 2011 OS untouched.
   no proxy; Fastmail IMAP/SMTP; Gmail IMAP/POP/SMTP). Gmail needs a Google App Password.
 - ✅ **Validates current certificates** against an up-to-date Mozilla CA bundle.
 - ✅ **gzip/deflate** decoding (curl built with zlib) — required for most sites.
+- ✅ **Modern TLS for the system Download Manager** (optional `downloadmgr-tls13`
+  package) — `/usr/bin/LunaDownloadMgr` is RPATH'd onto the ssl11 curl, so background
+  downloads *and* uploads reach modern HTTPS.
 - ✅ **Process-private & reboot-proof.** The modern stack lives in `/usr/lib/ssl11`
   and is loaded only by the browser, the app WebKit host, and the curl wrapper.
-  Wi‑Fi/VPN/EAP, `keymanager`, the download manager, Node services, etc.
-  keep using the original 0.9.8 and are **unaffected**. (E‑mail can be moved to
-  modern TLS separately with the optional `mail-tls13` package — see Packages.)
+  Wi‑Fi/VPN/EAP, `keymanager`, Node services, etc. keep using the original 0.9.8 and
+  are **unaffected**. (E‑mail and the download manager can each be moved to modern
+  TLS separately with the optional `mail-tls13` / `downloadmgr-tls13` packages — see
+  Packages.)
 - ✅ **Auto clock sync** (separate package): webOS's own time sync targets dead
   `palm.com` servers, so the clock drifts and breaks cert validity windows.
 - ✅ **Cleanly removable** — every change is reversible via package removal.
@@ -53,10 +77,11 @@ the rest of the 2011 OS untouched.
   (A UA override is a one-line edit to `/etc/palm/browser-app.conf`
   — `UserAgentOverride=...` — kept deliberately *out* of these packages.)
 - ❌ **It does not upgrade TLS system-wide.** Only the browser, the app WebKit
-  host, and the `curl` command are moved to 1.1. Wi‑Fi/VPN/EAP, `keymanager`,
-  `PmNetConfigManager`, the OS download manager, OTA/app-catalog fetches, and
-  other libcurl/OpenSSL consumers stay on 0.9.8 **on purpose** — a global swap
-  bricks boot. See *Effect on curl / libcurl* below.
+  host, the `curl` command, and — if you install the optional packages — the mail
+  transports and the download manager are moved to 1.1. Wi‑Fi/VPN/EAP,
+  `keymanager`, `PmNetConfigManager`, OTA/app-catalog fetches, and other
+  libcurl/OpenSSL consumers stay on 0.9.8 **on purpose** — a global swap bricks
+  boot. See *Effect on curl / libcurl* below.
 - ❌ **No brotli.** curl advertises gzip only. (gzip covers virtually everything.)
 - ❌ **It does not ship a CA bundle.** It relies on a current
   `/etc/ssl/certs/ca-certificates.crt` — see [Requirements](#requirements).
@@ -71,17 +96,21 @@ To be explicit, since this trips people up:
   defaults `CURL_CA_BUNDLE` to the system bundle so verification just works.
 - ✅ **App WebKit uses modern libcurl** — `luna-tls13` makes `LunaSysMgr`/`WebAppMgr`
   load `/usr/lib/ssl11`, so app `XHR` goes over TLS 1.3.
+- ✅ **The download manager can be modernized** — `downloadmgr-tls13` RPATHs
+  `/usr/bin/LunaDownloadMgr` onto the ssl11 curl with a baked CA bundle. Optional
+  and separate, for the same isolation reason.
 - ❌ **The system `/usr/lib/libcurl.so.4` (7.21.7 / 0.9.8) is NOT replaced.** Other
-  libcurl consumers — `PmNetConfigManager`, `keymanager`, the OS download manager,
-  app/JS services — keep using the old curl and are still limited to TLS 1.0. This
-  is intentional isolation (a global swap breaks unrelated services).
+  libcurl consumers — `PmNetConfigManager`, `keymanager`, app/JS services — keep
+  using the old curl and are still limited to TLS 1.0. This is intentional isolation
+  (a global swap breaks unrelated services).
 
 ---
 
 ## Requirements
 
-- **HP TouchPad, webOS 3.0.5** (Doctor 3.0.5 / "doctor305"). The only tested build
-  — see [Compatibility](#compatibility).
+- One of the **[supported devices](#supported-devices)** above: an HP TouchPad on
+  **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), or a Pre 3 / Veer / Pre 2 on
+  **webOS 2.2.4**. Each has its own build — see [Compatibility](#compatibility).
 - A **current Mozilla CA bundle** at `/etc/ssl/certs/ca-certificates.crt` (install a
   `ca-certificates` ipk; the stock 2011 bundle won't validate modern sites). The
   browser package **warns** on a stale bundle but does not install one.
@@ -90,16 +119,30 @@ To be explicit, since this trips people up:
 ## Packages
 
 Standard webos-internals-style ipks — install via **Preware**, **WebOS Quick
-Install**, **App Catalog**, or `ipkg install`. **Install in this order:**
+Install**, **App Catalog**, or `ipkg install`.
+
+**Grab the right files first.** The device-specific packages (`browser-tls13`,
+`luna-tls13`, `downloadmgr-tls13`, `mojomail-imap-tagfix`) are built per device and
+live in [`ipks/<codename>/`](ipks/); `curl-tls13`, `ntpdate-sync` and `mail-tls13`
+are identical on every device and live at [`ipks/`](ipks/) top level. On phones,
+prefer the merged [`ipks/phone/`](ipks/phone/) set — same packages with `-phone`
+appended to each name, one ipk covering all three boards, resolved at install time
+from `/etc/prefs/properties/machineName`. An unrecognised board (including a
+TouchPad) **exits non-zero before touching anything**. Full rationale in
+[`ipks/README.md`](ipks/README.md).
+
+**Install in this order** (append `-phone` to the device-specific names if you're
+using the merged phone set):
 
 | # | Package | Installs |
 |---|---------|----------|
 | 1 | `org.webosinternals.browser-tls13` | OpenSSL 1.1.1w + curl(zlib) + compat shim in `/usr/lib/ssl11`, and an RPATH-patched `/usr/bin/BrowserServer`. **Install first** — provides `/usr/lib/ssl11` that #2 and #3 build on. |
-| 2 | `org.webosinternals.luna-tls13` | Patches the `LunaSysMgr` upstart launcher to load `/usr/lib/ssl11`, moving app WebKit onto modern TLS. **v1.1.1 also installs a `media-pipeline` env-scrub wrapper so streaming *and* local media (Pandora/Plex/drPodder and stock Music) play reliably** — the media worker inherited the ssl11 stack it never needed, which wedged playback after one track. **v1.1.2 adds a `setcpushares-pdk` env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5 stack) launch again** — the launcher's `LD_BIND_NOW=1` leaked into every PDK launch and is fatal under LunaCE (its `libpvrtc.so` preload has lazily-unresolved symbols; eager binding kills `/bin/sh` at exec, exit 127), and the leaked compat-shim preload crashes nizovn-glibc apps under stock Luna. **v1.1.3 adds a `setcpushares-task` env-scrub wrapper so App-Manager installs/removes (Preware `installSvc`/WOSQI) stop wedging** — the same leaked `LD_BIND_NOW=1` killed `/bin/sh` running the installer's cpu-shares helper under LunaCE, failing the install and hanging Preware. Installs cleanly on top of 1.0.0/1.1.0/1.1.1/1.1.2. **Requires #1; reboot after.** |
+| 2 | `org.webosinternals.luna-tls13` | Patches the `LunaSysMgr` upstart launcher to load `/usr/lib/ssl11`, moving app WebKit onto modern TLS. **v1.1.1 also installs a `media-pipeline` env-scrub wrapper so streaming *and* local media (Pandora/Plex/drPodder and stock Music) play reliably** — the media worker inherited the ssl11 stack it never needed, which wedged playback after one track. **v1.1.2 adds a `setcpushares-pdk` env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5 stack) launch again** — the launcher's `LD_BIND_NOW=1` leaked into every PDK launch and is fatal under LunaCE (its `libpvrtc.so` preload has lazily-unresolved symbols; eager binding kills `/bin/sh` at exec, exit 127), and the leaked compat-shim preload crashes nizovn-glibc apps under stock Luna. **v1.1.3 adds a `setcpushares-task` env-scrub wrapper so App-Manager installs/removes (Preware `installSvc`/WOSQI) stop wedging** — the same leaked `LD_BIND_NOW=1` killed `/bin/sh` running the installer's cpu-shares helper under LunaCE, failing the install and hanging Preware. Installs cleanly on top of 1.0.0/1.1.0/1.1.1/1.1.2. **Requires #1; reboot after.** *(Those three wrappers are webOS 3.x / LunaCE-specific — the webOS 2.x phone build is the launcher patch alone, with no payload, and is byte-identical across all three phones.)* |
 | 3 | `org.webosinternals.curl-tls13` | Modern command-line curl as `/usr/bin/curl11` and `/usr/bin/curl`. Standalone. |
 | 4 | `org.webosinternals.ntpdate-sync` | Upstart job: public NTP at boot (retry-until-success) and every 6 h. Standalone. |
 | 5 | `org.webosinternals.mail-tls13` | **Optional.** Routes the stock Email app's native transports through OpenSSL 1.1.1w via a purpose-built libcurl + its own compat shim in `/usr/lib/ssl11mail`. **EAS, IMAP, POP & SMTP all working & hardware-proven** (Zoho EAS; Fastmail IMAP/SMTP; Gmail IMAP/POP/SMTP — needs a Google App Password). **Requires #1 installed** (for `/usr/lib/ssl11`); no reboot needed. See [BUILDING.md](BUILDING.md). |
 | 6 | `org.webosinternals.mojomail-imap-tagfix` | **Optional, standalone.** A one-byte patch to `mojomail-imap` so **strict IMAP servers (e.g. Fastmail) accept its command tags** (stock mojomail uses a `~`-prefixed tag some servers reject, hanging IMAP validation). Only needed for such servers; pairs with #5. Independent — take it or leave it. Reversible (restored on removal). See [mojomail-changes.md](mojomail-changes.md). |
+| 7 | `org.webosinternals.downloadmgr-tls13` | **Optional.** RPATHs the system Download Manager (`/usr/bin/LunaDownloadMgr`, `com.palm.downloadmanager`) onto the ssl11 curl 7.61.1 + a baked CA bundle, so background downloads **and uploads** negotiate TLS 1.2/1.3. No binary code patch — the daemon links no OpenSSL directly. **Requires #1**; remove it *before* #1. No reboot needed. |
 
 After installing, **reboot once** (`browser-tls13` self-restarts the browser, but
 `luna-tls13`'s launcher change applies on reboot). `luna-tls13`'s postinst refuses
@@ -186,18 +229,36 @@ and an end-to-end curl. Common results:
 
 ## Compatibility
 
-Built for the exact stock **webOS 3.0.5** `BrowserServer` (md5 `0786bdf6…`) and
-`libWebKitLuna` (md5 `3d90fd6e…`). The browser package only applies the RPATH swap
+Each build targets that device's **exact stock binaries** — on the TouchPad, the
+webOS 3.0.5 `BrowserServer` (md5 `0786bdf6…`) and `libWebKitLuna` (md5 `3d90fd6e…`);
+each 2.2.4 phone has its own pair. The browser package only applies the RPATH swap
 if `/usr/bin/BrowserServer` is non-stock-safe (it backs up whatever it replaces).
 If `tls13-diag.sh` reports a **different** `libWebKitLuna` md5, that device is a
 different webOS build — send that file to verify the struct offsets for that variant.
+
+**Wrong-device protection.** The merged `*-phone` packages resolve the board from
+`/etc/prefs/properties/machineName` (falling back to matching a known board name in
+`/etc/palm-build-info`) and `exit 1` **before touching anything** if it isn't one of
+`mantaray` / `broadway` / `roadrunner` — a TouchPad included. The per-codename ipks
+in `ipks/<board>/` have no such guard and are for hand-installing on a device you have
+already identified; they also **must not be published in one feed together**, because
+all four builds share the same `Package`+`Version`+`Architecture` and ipkg's dedupe
+key is exactly that triple. That is what the `phone` target exists to solve — see
+[`ipks/README.md`](ipks/README.md).
 
 ---
 
 ## Building from source
 
 See **[`BUILDING.md`](BUILDING.md)** — prerequisites (`patchelf`, GNU `ar`,
-auto-fetch of the stock `BrowserServer` over novacom) and `./build-ipks.sh`.
+auto-fetch of the stock `BrowserServer` over novacom) and `./build-ipks.sh`, which
+takes a device and/or a package:
+
+```sh
+./build-ipks.sh                 # every device whose stock binaries you have
+./build-ipks.sh phone           # the merged all-three-phones set -> ipks/phone/
+./build-ipks.sh topaz browser   # one device, one package
+```
 
 ## Credits / notes
 
