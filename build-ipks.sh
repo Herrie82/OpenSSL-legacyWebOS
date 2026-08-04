@@ -40,19 +40,24 @@ OUT="$BASE/ipks"; ARCH="armv7"
 # (legacy top-level BrowserServer.bin is still honored as topaz's, for back-compat.)
 # webOS device codenames (from palm-build-info BUILDNAME):
 #   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  roadrunner=Pre 2(2.2.4)  broadway=Veer(2.2.4)
-#   opal=TouchPad Go(3.0.4) -- a registered BOARD but deliberately NOT in ALL_DEVICES; it
-#   ships only through the 'go' TARGET below, as -go packages. Keeping it out of this list is
+#   opal=TouchPad Go -- a registered BOARD but deliberately NOT in ALL_DEVICES; it ships
+#   only through the 'go' TARGET below, as -go packages. Keeping it out of this list is
 #   what stops a bare `./build-ipks.sh` from emitting an unsuffixed opal ipk that would
 #   collide with topaz's on ipkg's Package+Version+Arch key. Its dev_* registry entries are
 #   keyed by board name and work fine without membership here.
 #
-# opal MUST get its own BrowserServer build: 3.0.5 adds five Palm::WebViewClient sensor
+# !! opal is NOT a single webOS version. The TouchPad Go shipped as BOTH 3.0.4 and 3.0.5,
+# depending on its cellular modem chipset, so BOARD NAME DOES NOT IMPLY BUILD. Everything
+# here (dev_bs_md5, dev_dlmgr_md5, dev_imap_*) is the 3.0.4 build; a 3.0.5 Go is NOT covered.
+#
+# What must match is the webOS BUILD, because 3.0.5 adds five Palm::WebViewClient sensor
 # virtuals (createSensor/destroySensor/getSupportedSensors/setSensorRate/startSensor) in the
 # MIDDLE of the vtable, so vtable-for-BrowserPage is 125 slots on 3.0.4 vs 130 on 3.0.5.
-# libWebKitLuna.so calls that vtable BY INDEX, so a topaz BrowserServer on a Go shifts every
-# slot from 36 up by +5 -- 3.0.4 slot 43 is setCanBlitOnScroll(bool) (called on every page
-# layout) but lands on 3.0.5's showPrintDialog(), which is why navigating raised the print
-# dialog. Never cross-install a BrowserServer between webOS builds.
+# libWebKitLuna.so calls that vtable BY INDEX, so mixing builds shifts every slot from 36 up
+# by +5 -- 3.0.4 slot 43 setCanBlitOnScroll(bool) (called on every page layout) and 3.0.5
+# showPrintDialog() trade places, which is why navigating raised the print dialog. Never
+# cross-install a BrowserServer between webOS builds; the postinst's stock-md5 guard (see
+# the browser-tls13 section) now enforces that at install time.
 ALL_DEVICES="topaz mantaray roadrunner broadway"
 # --- the 'phone' MULTI-BOARD target -------------------------------------------
 # A package manager cannot tell four ipks apart when they share Package + Version +
@@ -141,9 +146,20 @@ esac; }
 # webOS major family. Gates luna-tls13's env-scrub wrappers: 3.0.5 (LunaCE) needs the
 # media-pipeline / setcpushares-pdk / setcpushares-task wrappers; webOS 2.x does not
 # (no LunaCE; setcpushares-pdk doesn't even exist) -> 2.x gets a clean launcher-only luna.
+# Exact webOS build a board's payload was taken from. This -- not the board name -- is what
+# determines vtable compatibility: opal (TouchPad Go) shipped as BOTH 3.0.4 and 3.0.5
+# depending on the cellular modem chipset, so "board == opal" does NOT imply 3.0.4. Used for
+# the postinst's error message; the actual gate is the stock BrowserServer md5, which
+# identifies the build exactly.
+dev_osver() { case "$1" in
+  topaz)      echo "3.0.5";;
+  opal|go)    echo "3.0.4";;
+  mantaray|broadway|roadrunner|phone) echo "2.2.4";;
+  *)          echo "unknown";;
+esac; }
 dev_webos() { case "$1" in
   topaz)      echo "3";;
-  opal)       echo "3";;   # TouchPad Go is webOS 3.0.4 -- same LunaCE-era wrappers as topaz
+  opal)       echo "3";;   # TouchPad Go is webOS 3.x -- same LunaCE-era wrappers as topaz
   mantaray|broadway|roadrunner) echo "2";;
   phone)      echo "2";;   # every board in the phone bundle is webOS 2.x
   go)         echo "3";;   # the go target's only board is opal (webOS 3.0.4)
@@ -456,7 +472,7 @@ for b in $boards; do
   fi
   r_md5=$(md5sum "$F/$bsf" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
   echo "  [$dev/$b] $(dev_product "$b"): stock $s_md5 -> RPATH'd $r_md5"
-  BS_CASES="$BS_CASES  $b) BS_FILE=$bsf; STOCK_BS_MD5=$s_md5; RPATH_BS_MD5=$r_md5;;
+  BS_CASES="$BS_CASES  $b) BS_FILE=$bsf; STOCK_BS_MD5=$s_md5; RPATH_BS_MD5=$r_md5; EXPECT_OSVER=$(dev_osver "$b");;
 "
   BS_FILE1="$bsf"; STOCK1="$s_md5"; RPATH1="$r_md5"   # single-board target uses these directly
   staged="$staged $b"
@@ -506,10 +522,36 @@ else
 BS_FILE="$BS_FILE1"
 STOCK_BS_MD5="$STOCK1"
 RPATH_BS_MD5="$RPATH1"
+EXPECT_OSVER="$(dev_osver "$dev")"
 PID="$ID"
 EOF
 fi
 cat >> "$B/control/postinst" <<'EOF'
+# --- webOS-BUILD guard (must run before anything is touched) ------------------
+# The binary we swap in DEFINES the BrowserPage vtable that libWebKitLuna calls BY INDEX,
+# so it is only valid on the exact webOS build it was taken from. Board is NOT a sufficient
+# discriminator: opal (TouchPad Go) shipped as both webOS 3.0.4 and 3.0.5 depending on the
+# cellular modem chipset, and 3.0.5 inserts five Palm::WebViewClient sensor virtuals into the
+# MIDDLE of that vtable (125 slots on 3.0.4 vs 130 on 3.0.5) -- every slot from 36 up shifts by
+# five, so 3.0.4's setCanBlitOnScroll(bool) and 3.0.5's showPrintDialog() trade places.
+# The stock BrowserServer md5 identifies the build exactly, so gate on that: compare against
+# the device's OWN stock binary (the backup if we already made one, else what is live now).
+if [ -f /usr/bin/BrowserServer.tls13-orig ]; then
+    ref=$(md5sum /usr/bin/BrowserServer.tls13-orig 2>/dev/null | cut -d' ' -f1)
+else
+    ref=$(md5sum /usr/bin/BrowserServer 2>/dev/null | cut -d' ' -f1)
+fi
+osv=$(sed -n 's/^PRODUCT_VERSION_STRING=.* \([0-9][0-9.]*\)$/\1/p' /etc/palm-build-info 2>/dev/null | head -1)
+if [ -n "$ref" ] && [ "$ref" != "$STOCK_BS_MD5" ] && [ "$ref" != "$RPATH_BS_MD5" ]; then
+    echo "browser-tls13: ERROR -- this package targets webOS $EXPECT_OSVER, whose stock"
+    echo "  BrowserServer is $STOCK_BS_MD5."
+    echo "  This device reports webOS ${osv:-unknown} with stock BrowserServer $ref."
+    echo "  The patched binary defines the BrowserPage vtable that libWebKitLuna calls by"
+    echo "  index, so using it across webOS builds misroutes virtual calls and breaks the"
+    echo "  browser. NOT patching -- a build for this device's webOS version is needed."
+    exit 1
+fi
+
 # App-Manager installs offline under /media/cryptofs/apps and leaves the root ro;
 # raw `ipkg install` puts files at / . Find wherever our payload actually landed.
 [ -z "$IPKG_OFFLINE_ROOT" ] && IPKG_OFFLINE_ROOT=/media/cryptofs/apps
@@ -1449,7 +1491,7 @@ for b in $boards; do
   fi
   r_md5=$(md5sum "$F7/$dlf" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
   echo "  [$dev/$b] $(dev_product "$b"): stock $s_md5 -> RPATH'd $r_md5"
-  DL_CASES="$DL_CASES  $b) DL_FILE=$dlf; STOCK_DLMGR_MD5=$s_md5; RPATH_DLMGR_MD5=$r_md5;;
+  DL_CASES="$DL_CASES  $b) DL_FILE=$dlf; STOCK_DLMGR_MD5=$s_md5; RPATH_DLMGR_MD5=$r_md5; EXPECT_OSVER=$(dev_osver "$b");;
 "
   DL_FILE1="$dlf"; DSTOCK1="$s_md5"; DRPATH1="$r_md5"
   staged7="$staged7 $b"
@@ -1494,10 +1536,30 @@ else
 DL_FILE="$DL_FILE1"
 STOCK_DLMGR_MD5="$DSTOCK1"
 RPATH_DLMGR_MD5="$DRPATH1"
+EXPECT_OSVER="$(dev_osver "$dev")"
 PID="$ID7"
 EOF
 fi
 cat >> "$B7/control/postinst" <<'EOF'
+# --- webOS-BUILD guard (must run before anything is touched) ------------------
+# Same reasoning as browser-tls13: a stock binary is only valid on the webOS build it came
+# from, and board is not a sufficient discriminator (opal shipped as both 3.0.4 and 3.0.5).
+# LunaDownloadMgr is far less exposed than BrowserServer -- its five vtables are identical
+# between 3.0.4 and 3.0.5 and nothing links against an executable -- but swapping a binary
+# across builds is still wrong, so gate on the stock md5, which identifies the build exactly.
+if [ -f /var/luna/LunaDownloadMgr.tls13-orig ]; then
+    ref=$(md5sum /var/luna/LunaDownloadMgr.tls13-orig 2>/dev/null | cut -d' ' -f1)
+else
+    ref=$(md5sum /usr/bin/LunaDownloadMgr 2>/dev/null | cut -d' ' -f1)
+fi
+osv=$(sed -n 's/^PRODUCT_VERSION_STRING=.* \([0-9][0-9.]*\)$/\1/p' /etc/palm-build-info 2>/dev/null | head -1)
+if [ -n "$ref" ] && [ "$ref" != "$STOCK_DLMGR_MD5" ] && [ "$ref" != "$RPATH_DLMGR_MD5" ]; then
+    echo "downloadmgr-tls13: ERROR -- this package targets webOS $EXPECT_OSVER, whose stock"
+    echo "  LunaDownloadMgr is $STOCK_DLMGR_MD5."
+    echo "  This device reports webOS ${osv:-unknown} with stock LunaDownloadMgr $ref."
+    echo "  NOT patching -- a build for this device's webOS version is needed."
+    exit 1
+fi
 [ -z "$IPKG_OFFLINE_ROOT" ] && IPKG_OFFLINE_ROOT=/media/cryptofs/apps
 mount -o remount,rw / 2>/dev/null || true
 SRC=""

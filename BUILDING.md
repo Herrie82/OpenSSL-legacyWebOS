@@ -70,12 +70,41 @@ board but `opal`.
 This is not theoretical. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals
 (`createSensor` / `destroySensor` / `getSupportedSensors` / `setSensorRate` /
 `startSensor`) into the **middle** of the `BrowserPage` vtable, so it is 125 slots on
-3.0.4 and 130 on 3.0.5. `libWebKitLuna.so` calls that vtable **by index**, so a topaz
-`BrowserServer` on a Go shifts every slot from 36 up by five — 3.0.4's slot 43
+3.0.4 and 130 on 3.0.5. `libWebKitLuna.so` calls that vtable **by index**, so a 3.0.5
+`BrowserServer` on a 3.0.4 tablet shifts every slot from 36 up by five — 3.0.4's slot 43
 `setCanBlitOnScroll(bool)`, called on every page layout, lands on 3.0.5's
 `showPrintDialog()`. Result: the print dialog opens on every navigation, 100%
 reproducible. The YAP IPC layer is *not* involved — `BrowserServerBase`'s msg/asyncCmd
 symbol sets and full mangled signatures are identical between the two builds.
+
+**The discriminator is the webOS BUILD, not the board.** `opal` shipped as *both* 3.0.4
+and 3.0.5 (availability depended on the cellular modem chipset), so `machineName` alone
+cannot tell you which vtable layout a Go has. The `go` target therefore covers **3.0.4
+only**, and every device-specific postinst gates on the device's own stock binary md5 —
+see [The webOS-build guard](#the-webos-build-guard) below. A 3.0.5 Go is declined by the
+`-go` package; whether the `topaz` build serves it depends on whether its stock
+`BrowserServer` matches topaz's, which is untested (no 3.0.5 Go available).
+
+## The webOS-build guard
+
+Every `browser-tls13` / `downloadmgr-tls13` postinst, for **all** targets (suffixed or
+not), verifies the device's own stock binary before touching anything:
+
+```sh
+ref = md5(/usr/bin/BrowserServer.tls13-orig  if we already made a backup,
+          else the live /usr/bin/BrowserServer)
+if ref != STOCK_BS_MD5 and ref != RPATH_BS_MD5:  print expected-vs-actual; exit 1
+```
+
+The stock md5 identifies the webOS build exactly, which neither the board name nor
+`PRODUCT_VERSION_STRING` can (the version string is only used to make the error message
+readable). `RPATH_BS_MD5` is accepted so reinstall/upgrade over our own binary still
+works. Registry: `dev_osver()` supplies the expected version for the message.
+
+Verified on hardware against a 3.0.4 TouchPad Go: the `topaz` package refuses with
+`targets webOS 3.0.5 … device reports webOS 3.0.4`, while the `-go` package passes.
+**This change makes a previously-tolerated case fatal** — before, a stock binary that
+didn't match the registry only produced a `NOTE:` and the swap proceeded anyway.
 
 Note the split between folder and suffix: `tgt_outdir()` keeps the output directory on
 the board codename (`ipks/opal/`, matching `devices/opal/`) while `tgt_suffix()` supplies

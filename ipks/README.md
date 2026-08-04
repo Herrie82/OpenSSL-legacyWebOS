@@ -9,7 +9,7 @@ matching device folder **plus** the three shared packages:
 | Device | codename | device-specific folder | + shared (this dir) |
 |--------|----------|------------------------|---------------------|
 | HP TouchPad (webOS 3.0.5) | topaz | [`topaz/`](topaz/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
-| HP TouchPad Go (webOS 3.0.4) | opal | [`opal/`](opal/) — `*-go` names | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+| HP TouchPad Go (webOS 3.0.4 **only**) | opal | [`opal/`](opal/) — `*-go` names | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | HP Pre 3 (webOS 2.2.4) | mantaray | [`mantaray/`](mantaray/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | Palm Pre 2 (webOS 2.2.4) | roadrunner | [`roadrunner/`](roadrunner/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | HP Veer (webOS 2.2.4) | broadway | [`broadway/`](broadway/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
@@ -20,13 +20,20 @@ Each device folder holds `browser-tls13`, `luna-tls13`, `downloadmgr-tls13`, and
 packages are identical across devices. (A new device builds the same way — drop its stock
 binaries in `devices/<codename>/` and run `./build-ipks.sh <codename>`.)
 
-> **TouchPad owners:** the TouchPad and the TouchPad Go are **not** interchangeable. The Go
-> is webOS 3.0.4, and 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals into the
-> *middle* of the `BrowserPage` vtable (125 slots vs 130). `libWebKitLuna.so` calls that
-> vtable **by index**, so a topaz `BrowserServer` on a Go shifts every slot from 36 up by
-> five — 3.0.4's slot 43 `setCanBlitOnScroll(bool)` (called on every page layout) lands on
-> 3.0.5's `showPrintDialog()`, and **the print dialog opens every time you navigate**. Use
-> [`opal/`](opal/); its `-go` packages refuse to install on anything else.
+> **TouchPad owners — match the webOS BUILD, not the board.** 3.0.5 inserts five
+> `Palm::WebViewClient` sensor virtuals into the *middle* of the `BrowserPage` vtable (125
+> slots on 3.0.4 vs 130 on 3.0.5), and `libWebKitLuna.so` calls that vtable **by index**, so
+> every slot from 36 up shifts by five — 3.0.4's slot 43 `setCanBlitOnScroll(bool)` (called
+> on every page layout) trades places with 3.0.5's `showPrintDialog()`, and **the print
+> dialog opens every time you navigate**.
+>
+> The TouchPad Go (`opal`) shipped at **both 3.0.4 and 3.0.5** depending on its cellular
+> modem, so the board name doesn't tell you which you have. [`opal/`](opal/)'s `-go`
+> packages are **3.0.4 only**. Every device-specific package verifies your device's own
+> stock binary by md5 and **refuses before touching anything** if it's the wrong build — so
+> a wrong pick is declined, not silently broken. On a **3.0.5 Go**, try [`topaz/`](topaz/):
+> it installs if that Go's stock `BrowserServer` matches topaz's, and tells you the md5 it
+> found if not. (Untested — no 3.0.5 Go was available.)
 
 ## `phone/` — one set of packages for all three phones (use this for a FEED)
 
@@ -59,7 +66,8 @@ Because the names differ from the topaz ones, both families can live in a single
 
 ## `opal/` — the TouchPad Go (`*-go` names)
 
-Same reasoning, one board. `./build-ipks.sh go` emits `org.webosinternals.browser-tls13-go`,
+Same reasoning, one board — but note it covers **webOS 3.0.4 Gos only**; `opal` also shipped at
+3.0.5. `./build-ipks.sh go` emits `org.webosinternals.browser-tls13-go`,
 `…luna-tls13-go`, `…downloadmgr-tls13-go` and `…mojomail-imap-tagfix-go` into [`opal/`](opal/).
 The distinct name is the point: `opal` and `topaz` packages would otherwise collide on that same
 `Package`+`Version`+`Architecture` key, and a Go could be handed the topaz build — which is

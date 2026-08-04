@@ -16,7 +16,7 @@ the rest of the 2011 OS untouched.
 | Device | codename | webOS | Status |
 |---|---|---|---|
 | HP TouchPad | `topaz` | 3.0.5 | ✅ Hardware-verified |
-| HP TouchPad Go | `opal` | 3.0.4 | ⚠️ Browser + IMAP tagfix hardware-proven; luna/downloadmgr built, full install pass pending |
+| HP TouchPad Go | `opal` | 3.0.4 **only** | ⚠️ Browser + IMAP tagfix hardware-proven on a 3.0.4 Go; luna/downloadmgr built, full install pass pending. **A 3.0.5 Go is not covered** — see below |
 | HP Pre 3 | `mantaray` | 2.2.4 | ✅ Hardware-verified |
 | HP Veer | `broadway` | 2.2.4 | ⚠️ Built & published, untested on hardware |
 | Palm Pre 2 | `roadrunner` | 2.2.4 | ⚠️ Built & published, untested on hardware |
@@ -29,15 +29,28 @@ board at install time — that is the build a feed should carry. The TouchPad Go
 the same way, as `*-go` packages in [`ipks/opal/`](ipks/opal/). See
 [Which packages for which device](#packages).
 
-**The TouchPad Go needs its own build — never install the TouchPad's.** The Go is
-webOS 3.0.4, and 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals into the
-*middle* of the `BrowserPage` vtable (125 slots on 3.0.4 vs 130 on 3.0.5).
-`libWebKitLuna.so` calls that vtable **by index**, so a topaz `BrowserServer` on a Go
-shifts every slot from 36 up by five: 3.0.4's slot 43 is `setCanBlitOnScroll(bool)`,
-called on every page layout, but lands on 3.0.5's `showPrintDialog()`. The visible
-symptom is the **print dialog opening every time you navigate** — 100% reproducible,
-even factory-fresh. The `*-go` packages carry a hard `machineName` guard that refuses
-to install on anything but `opal`.
+**What must match is the webOS BUILD, not the board.** The device-specific packages
+swap in a stock binary, and `BrowserServer` *defines* the `BrowserPage` vtable that
+`libWebKitLuna.so` calls **by index**. webOS 3.0.5 inserts five `Palm::WebViewClient`
+sensor virtuals into the *middle* of that vtable (125 slots on 3.0.4 vs 130 on 3.0.5),
+so every slot from 36 up shifts by five: 3.0.4's slot 43 `setCanBlitOnScroll(bool)`,
+called on every page layout, trades places with 3.0.5's `showPrintDialog()`. Install a
+3.0.5 binary on a 3.0.4 tablet and **the print dialog opens every time you navigate** —
+100% reproducible, even factory-fresh. The reverse (3.0.4 binary on a 3.0.5 tablet) is
+worse: 3.0.5 would call the sensor slots and land on unrelated 3.0.4 methods with
+mismatched signatures.
+
+**The TouchPad Go (`opal`) shipped at BOTH 3.0.4 and 3.0.5**, depending on its cellular
+modem chipset — so the board name alone does *not* tell you which build you have. The
+`*-go` packages target **webOS 3.0.4 only**. Every device-specific package now verifies
+the device's own stock binary by md5 (the md5 identifies the webOS build exactly) and
+**refuses to install, before touching anything**, if it doesn't match the build it was
+made for. So a 3.0.5 Go will simply be declined rather than silently broken.
+
+If you have a **3.0.5 Go**: try the `topaz` build. If that Go's stock `BrowserServer`
+matches topaz's (md5 `0786bdf6…`) it will install; if it doesn't, the package will say
+so and a separate 3.0.5-Go build is needed. We have no 3.0.5 Go to check against, so
+this is untested — if you have one, the refusal message reports the md5 we'd need.
 
 On the phones, **webOS 2.2.4 is a hard requirement**, not a recommendation: an
 un-upgraded Veer (2.2.0) or Pre 2 (2.1.0) has different stock binaries than these
@@ -121,7 +134,9 @@ To be explicit, since this trips people up:
 ## Requirements
 
 - One of the **[supported devices](#supported-devices)** above: an HP TouchPad on
-  **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), an HP TouchPad Go on **webOS 3.0.4**,
+  **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), an HP TouchPad Go on **webOS 3.0.4**
+  (3.0.5 Gos exist and are *not* covered by the `-go` build — see
+  [Supported devices](#supported-devices)),
   or a Pre 3 / Veer / Pre 2 on **webOS 2.2.4**. Each has its own build — see
   [Compatibility](#compatibility). The two tablets are **not** interchangeable; a
   TouchPad build on a Go breaks the browser (see [Supported devices](#supported-devices)).
@@ -256,13 +271,21 @@ different webOS build — send that file to verify the struct offsets for that v
 `/etc/prefs/properties/machineName` (falling back to matching a known board name in
 `/etc/palm-build-info`) and `exit 1` **before touching anything** if it isn't one of
 `mantaray` / `broadway` / `roadrunner` — a TouchPad included. The `*-go` packages in
-`ipks/opal/` use the same mechanism, refusing anything but `opal`. The per-codename ipks
-in `ipks/<board>/` have no such guard and are for hand-installing on a device you have
-already identified; they also **must not be published in one feed together**, because
-all four builds share the same `Package`+`Version`+`Architecture` and ipkg's dedupe
-key is exactly that triple. That is what the `phone` and `go` targets exist to solve —
-and it is not hypothetical: a TouchPad Go handed the topaz build is exactly how the
-print-on-navigate bug above happened. See [`ipks/README.md`](ipks/README.md).
+`ipks/opal/` use the same mechanism, refusing anything but `opal`.
+
+**Wrong-BUILD protection (the one that actually matters).** Board identity is not
+enough, because `opal` ships at two different webOS versions. So *every* device-specific
+package — including the unsuffixed per-codename ones — now also verifies the device's
+**own stock binary by md5** before doing anything, and `exit 1`s if it isn't the build
+the package was made for. The md5 pins the webOS build exactly, which a board name or
+even a version string cannot. This is what would have caught the original bug: a
+TouchPad Go handed the topaz build is exactly how the print-on-navigate failure
+happened, and that install is now refused outright.
+
+The per-codename ipks in `ipks/<board>/` still **must not be published in one feed
+together**, because all four builds share the same `Package`+`Version`+`Architecture`
+and ipkg's dedupe key is exactly that triple. That is what the `phone` and `go` targets
+exist to solve. See [`ipks/README.md`](ipks/README.md).
 
 ---
 
