@@ -97,13 +97,19 @@ PHONE_TARGET="phone"
 # byte-identical -- the Go never shared a name with it again).
 #
 # Build with:  ./build-ipks.sh go        (or 'go browser', etc.)
-# Output:      ipks/go/org.webosinternals.<pkg>-go_<ver>_armv7.ipk
+# Output:      ipks/opal/org.webosinternals.<pkg>-go_<ver>_armv7.ipk
+# Note the split: the OUTPUT DIR is keyed by board codename (opal, matching devices/opal/ and
+# every other per-device dir), while the PACKAGE SUFFIX is the friendlier -go. tgt_outdir()
+# below is what decouples the two; every other target's dir still equals its target name.
 GO_BOARDS="opal"
 GO_TARGET="go"
 # Package-name suffix + the boards a target bundles. Single-board targets keep the
 # historical flat payload filenames so their ipks stay byte-identical to before.
 tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; "$GO_TARGET") echo "-go";; *) echo "";; esac; }
 tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
+# Output subdir under ipks/. Defaults to the target name; the 'go' target overrides it to its
+# board codename so the tree stays board-keyed (ipks/opal/ alongside devices/opal/).
+tgt_outdir() { case "$1" in "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
 dev_product() { case "$1" in
   topaz)      echo "HP TouchPad (webOS 3.0.5)";;
   opal)       echo "HP TouchPad Go (webOS 3.0.4)";;
@@ -569,7 +575,7 @@ start browserserver 2>/dev/null || true
 exit 0
 EOF
 chmod 0755 "$B/control/postinst" "$B/control/prerm"
-pack "$B" "${ID}_${TLSVER}_${ARCH}.ipk" "$OUT/$dev"
+pack "$B" "${ID}_${TLSVER}_${ARCH}.ipk" "$OUT/$(tgt_outdir "$dev")"
 done  # for dev in $DEVICES
 fi  # want browser
 
@@ -1066,7 +1072,7 @@ fi
 exit 0
 EOF
 chmod 0755 "$B4/control/postinst" "$B4/control/prerm"
-pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk" "$OUT/$dev"
+pack "$B4" "${ID4}_${LUNAVER}_${ARCH}.ipk" "$OUT/$(tgt_outdir "$dev")"
 done  # for dev in $DEVICES
 fi  # want luna
 
@@ -1391,7 +1397,7 @@ killall mojomail-imap 2>/dev/null
 exit 0
 EOF
   chmod 0755 "$B6/control/postinst" "$B6/control/prerm"
-  pack "$B6" "${ID6}_${IMAPTAGVER}_${ARCH}.ipk" "$OUT/$dev"
+  pack "$B6" "${ID6}_${IMAPTAGVER}_${ARCH}.ipk" "$OUT/$(tgt_outdir "$dev")"
 done  # for dev in $DEVICES
 fi  # want imaptagfix
 
@@ -1558,7 +1564,7 @@ start LunaDownloadMgr 2>/dev/null || true
 exit 0
 EOF
 chmod 0755 "$B7/control/postinst" "$B7/control/prerm"
-pack "$B7" "${ID7}_${DOWNVER}_${ARCH}.ipk" "$OUT/$dev"
+pack "$B7" "${ID7}_${DOWNVER}_${ARCH}.ipk" "$OUT/$(tgt_outdir "$dev")"
 done  # for dev in $DEVICES
 fi  # want downloadmgr
 
