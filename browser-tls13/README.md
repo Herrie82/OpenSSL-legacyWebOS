@@ -12,9 +12,12 @@ OpenSSL swap that broke boot before.
 > dialog opens on every navigation.
 >
 > Board is **not** a safe proxy for the build: `opal` (TouchPad Go) shipped at both 3.0.4
-> and 3.0.5. The postinst therefore gates on the device's own stock binary md5, which pins
-> the build exactly, and refuses before touching anything on a mismatch. Build from each
-> device's own stock binary; see [BUILDING.md](../BUILDING.md).
+> and 3.0.5. The postinst therefore gates on the device's own `PRODUCT_VERSION_STRING` and
+> refuses before touching anything if it isn't the webOS version the package was built for
+> (a Go still on 3.0.4 is told to doctor itself to 3.0.5). The stock **md5** is deliberately
+> *not* the gate: it is a per-device fact, not a per-build one — a doctored Go's stock
+> binaries differ from a TouchPad's on the same 3.0.5 build, and the TouchPad package is
+> hardware-proven there. See [BUILDING.md](../BUILDING.md).
 
 ## Why this works where the old `package/install.sh` didn't
 

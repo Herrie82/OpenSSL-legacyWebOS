@@ -10,17 +10,16 @@ stock mojomail binary ships in its own optional package and is documented separa
 ./build-ipks.sh mail                     # one or more packages, default device set
 ./build-ipks.sh topaz browser            # one device, one package
 ./build-ipks.sh phone                    # the merged all-three-phones set -> ipks/phone/
-./build-ipks.sh go                       # TouchPad Go, webOS 3.0.4 (-3.0.4 names) -> ipks/opal/
 ./build-ipks.sh alldevices               # topaz + mantaray + roadrunner + broadway
 ```
 
 Arguments are **order-free** and each is either a device or a package:
 
-- **devices** — `topaz` (HP TouchPad 3.0.5), `mantaray` (Pre 3), `roadrunner` (Pre 2),
-  `broadway` (Veer); plus `alldevices` (all four, separately), `phone` and `go` (see below).
-  `opal` (HP TouchPad Go 3.0.4) is a registered **board** but not a member of
-  `ALL_DEVICES` — it ships only via the `go` target, so a bare `./build-ipks.sh` cannot
-  emit an unsuffixed `opal` ipk that would collide with topaz's.
+- **devices** — `topaz` (HP TouchPad **and** TouchPad Go, both webOS 3.0.5), `mantaray`
+  (Pre 3), `roadrunner` (Pre 2), `broadway` (Veer); plus `alldevices` (all four,
+  separately) and `phone` (see below). The TouchPad Go (`opal`) has **no target of its
+  own**: doctor it to 3.0.5 — there is a Doctor for every Go variant — and it takes the
+  `topaz` build, which is hardware-proven on one.
 - **packages** — `browser | luna | curl | ntp | mail | imaptagfix | downloadmgr | all`
   (default `all`).
 
@@ -57,17 +56,19 @@ checkout — you still need GNU `ar`. Keep `ipks/{topaz,mantaray,roadrunner,broa
 the repo for this reason.
 
 Single-board targets are unaffected by any of this: `tgt_suffix`/`tgt_boards` return
-`""`/`"$dev"` for a real board, so `ipks/topaz/` keeps its historical flat payload
-filenames.
+`""`/`"$dev"` for a real board, so `ipks/tablet/` keeps its historical flat payload
+filenames. (`tgt_outdir()` maps only `topaz` → `tablet/`, because that build serves both
+3.0.5 tablets; every other target's folder is its own name.)
 
-## The `go` target (HP TouchPad Go, `opal`)
+## The TouchPad Go (`opal`) — doctor it to 3.0.5
 
-`./build-ipks.sh go` emits `*-3.0.4` packages into `ipks/opal/`. It reuses the `phone`
-target's suffix machinery for a **single** board, purely to get a distinct package name
-and the `machineName` guard that comes with it: a `-3.0.4` package exits non-zero on any
-board but `opal`.
+The Go **had** its own `go` target emitting `-3.0.4` packages. It no longer does: a Doctor
+exists that brings every Go variant up to webOS 3.0.5, and at 3.0.5 the `topaz` build is
+the correct one for it. Verified on a doctored Go — it runs the `topaz` `BrowserServer`
+(`a56bf4fe…`) and `LunaDownloadMgr` (`de784d7f…`) and takes the IMAP tagfix.
 
-This is not theoretical. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals
+The reason the Go ever needed separate packages is worth keeping, because it is what the
+build guard now enforces. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals
 (`createSensor` / `destroySensor` / `getSupportedSensors` / `setSensorRate` /
 `startSensor`) into the **middle** of the `BrowserPage` vtable, so it is 125 slots on
 3.0.4 and 130 on 3.0.5. `libWebKitLuna.so` calls that vtable **by index**, so a 3.0.5
@@ -77,59 +78,49 @@ This is not theoretical. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor v
 reproducible. The YAP IPC layer is *not* involved — `BrowserServerBase`'s msg/asyncCmd
 symbol sets and full mangled signatures are identical between the two builds.
 
-**The shipping unit is a (board, webOS build) PAIR — neither key alone is enough.**
-Measured across the committed binaries:
+**The vtable layout follows the webOS BUILD; the binary is still per-device.** Measured
+across the binaries we have:
 
 | | vtable slots | binary |
 |---|---|---|
 | mantaray / roadrunner / broadway (all 2.2.4) | 101 / 101 / 101 | mantaray vs broadway differ by **10 bytes**; roadrunner differs from both by **114,939** |
-| opal (3.0.4) | 125 | — |
-| topaz (3.0.5) | 130 | — |
+| opal (3.0.4, pre-Doctor) | 125 | — |
+| topaz / doctored opal (3.0.5) | 130 | same 252,564 bytes, **6,627** of them different (2.6 %) |
 
-So the **vtable layout follows the webOS build** (three independent boards at 2.2.4 all
-land on 101 slots), which is why the ABI guard keys on the build. But the **binary is
-still per-board** — same version, same vtable, ~48% of bytes different between Pre 2 and
-Pre 3 — which is why the payload folders stay board-keyed. Renaming them to `3.0.4/` and
-`3.0.5/` would wrongly imply one binary per version.
-
-`opal` is simply the first board with *two* builds in the wild (3.0.4 and 3.0.5,
-depending on the cellular modem chipset), so `machineName` alone cannot tell you which
-vtable a Go has. The `go` target covers **3.0.4 only**; a 3.0.5 Go needs its own build
-rather than a substituted `topaz` binary, and the guard declines it in the meantime. See
-[The webOS-build guard](#the-webos-build-guard) below.
+Three independent boards at 2.2.4 all land on 101 slots, which is why the guard keys on the
+build. But two devices on the *same* build still ship different binaries — mildly on the two
+3.0.5 tablets, drastically between Pre 2 and Pre 3 (~48 % of bytes) — so **a stock md5 is a
+per-device fact, not a per-build one**, and gating on it would wrongly decline a doctored Go.
+That is precisely the bug that the md5-based version of this guard had.
 
 ## The webOS-build guard
 
 Every `browser-tls13` / `downloadmgr-tls13` postinst, for **all** targets (suffixed or
-not), verifies the device's own stock binary before touching anything:
+not), checks the device's webOS version before touching anything:
 
 ```sh
-ref = md5(/usr/bin/BrowserServer.tls13-orig  if we already made a backup,
-          else the live /usr/bin/BrowserServer)
-if ref != STOCK_BS_MD5 and ref != RPATH_BS_MD5:  print expected-vs-actual; exit 1
+osv = PRODUCT_VERSION_STRING from /etc/palm-build-info      # e.g. "3.0.5"
+if osv and osv != EXPECT_OSVER:            print expected-vs-actual; exit 1   # wrong build
+if not osv and stock md5 is unrecognised:  exit 1                            # can't tell -> refuse
+if stock md5 is unrecognised (osv matched): print NOTE; proceed               # e.g. a doctored Go
 ```
 
-The stock md5 identifies the webOS build exactly, which neither the board name nor
-`PRODUCT_VERSION_STRING` can (the version string is only used to make the error message
-readable). `RPATH_BS_MD5` is accepted so reinstall/upgrade over our own binary still
-works. Registry: `dev_osver()` supplies the expected version for the message.
+`PRODUCT_VERSION_STRING` is the invariant that matters, and it is now proven to hold across
+two *different* 3.0.5 binaries. The stock md5 survives as a fallback for a device whose
+`/etc/palm-build-info` can't be read, and as the trigger for the "backed up a non-stock
+binary" note. The RPATH'd md5 is also accepted everywhere, so reinstall/upgrade over our own
+binary still works. Registry: `dev_osver()` supplies the expected version.
 
-Verified on hardware against a 3.0.4 TouchPad Go: the `topaz` package refuses with
-`targets webOS 3.0.5 … device reports webOS 3.0.4`, while the `-3.0.4` package passes.
-**This change makes a previously-tolerated case fatal** — before, a stock binary that
-didn't match the registry only produced a `NOTE:` and the swap proceeded anyway.
+Verified on hardware and by unit-testing the emitted postinst across all six paths: a
+doctored Go (3.0.5, stock `aae93132…`) installs with the NOTE and works; 3.0.4 and 2.2.4
+devices are refused, the 3.0.4 message telling the owner to doctor the Go; an unreadable
+version falls back to the md5 rule in both directions.
 
-Note the split between folder and suffix: `tgt_outdir()` keeps the output directory on
-the board codename (`ipks/opal/`, matching `devices/opal/`) while `tgt_suffix()` supplies
-the `-3.0.4` package name. Every other target's directory still equals its target
-name.
-
-**Unlike every other device, the Go's stock binaries are committed** in `devices/opal/`.
-They have to be. The `novacom` auto-fetch returns the *patched* binary from any Go that
-already has these packages installed, and the md5 guard correctly rejects it; and
-`prebuilt_rpath()` only looks in the unsuffixed `ipks/<board>/` dir, which the `go` target
-never creates. Without the committed binaries, `browser-tls13-3.0.4` and `downloadmgr-tls13-3.0.4`
-can only be rebuilt from a freshly-Doctored Go.
+`mojomail-imap-tagfix` gets the same treatment from the other end: `dev_imap_variants()`
+lists every known `<stock md5>:<patched md5>:<offset>` for a board and the postinst matches
+the **live** binary, so one package patches a TouchPad (offset 991784) or a doctored Go
+(offset 991664) and declines anything unrecognised. Add a variant by finding the single
+`~A` in the binary, flipping `0x7e`→`0x41`, and md5-ing both.
 
 The packages: the four core TLS packages `browser-tls13`, `luna-tls13`, `curl-tls13`,
 `ntpdate-sync`; the mail TLS package `mail-tls13` (its own large section below — it needs a
@@ -153,10 +144,9 @@ patch, kept separate so it can be taken or left independently).
   factory/stock TouchPad** and verifies the md5. These are **not committed** (`.gitignore`
   covers `BrowserServer.bin`), so a fresh checkout has none — which is fine: only the
   `browser`/`downloadmgr` packages need them, and the `phone` target reuses the committed
-  per-board ipks instead (see above). **`opal` is the exception**: its
-  `devices/opal/{BrowserServer,LunaDownloadMgr,mojomail-imap}` *are* committed, because the
-  auto-fetch returns the patched binary on an already-patched Go and `prebuilt_rpath()`
-  can't help a suffixed target (see [The `go` target](#the-go-target-hp-touchpad-go-opal)).
+  per-board ipks instead (see above). Note the auto-fetch returns the *patched* binary from
+  a device that already has these packages installed — fetch from a stock/doctored one, or
+  restore `/usr/bin/BrowserServer.tls13-orig` first.
 - Other inputs (`openssl-1.1.1w/`, `curl-7.88.1/`, `libssl_compat.so`, `ntpdate-sync`,
   and — for mail — `curl-mail/`) are committed in the repo.
 
@@ -480,17 +470,16 @@ Recovery for the browser/luna stack (if the UI ever fails to boot) is in the
 
 ```
 build-ipks.sh          build the ipks; args are order-free devices and/or packages
-                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone|go
+                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone
                        packages: browser|luna|curl|ntp|mail|imaptagfix|downloadmgr|all
 tls13-diag.sh          on-device diagnostic for the four-package stack (PASS/FAIL VERDICT)
 mail-tls13-diag.sh     on-device diagnostic for mail-tls13
 mojomail-changes.md    the single 1-byte change to a stock mojomail binary (the imaptagfix package)
 ipks/                  built packages + slim install-order README
-ipks/<codename>/       device-specific builds (browser, luna, downloadmgr, imaptagfix)
+ipks/tablet/           webOS 3.0.5 tablets: HP TouchPad + doctored TouchPad Go (./build-ipks.sh topaz)
+ipks/<codename>/       per-phone builds (browser, luna, downloadmgr, imaptagfix)
 ipks/phone/            merged all-three-phones set (*-phone names) — the feed-safe build
-ipks/opal/             HP TouchPad Go, webOS 3.0.4 (*-3.0.4 names) — ./build-ipks.sh go
-devices/<codename>/    stock Palm binaries per board (not committed EXCEPT devices/opal/;
-                       see Prerequisites and The `go` target)
+devices/<codename>/    stock Palm binaries per board (not committed; see Prerequisites)
 openssl-1.1.1w/        OpenSSL 1.1.1w tree (libssl.so.1.1, libcrypto.so.1.1; ssl->ctx @0xD8, cert @0x8)
 curl-7.88.1/           curl 7.88.1 tree for browser/curl packages (libcurl.so.4.8.0, src/.libs/curl)
 curl-mail/lib/.libs/   curl 7.61.1 libcurl for mail (vs OpenSSL 1.1 headers, --enable-ares, --with-ca-bundle)

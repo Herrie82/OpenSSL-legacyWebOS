@@ -131,8 +131,8 @@ IMAP+SMTP (Fastmail, TLS 1.3), and Gmail IMAP/POP/SMTP (TLS 1.2, see the ECDSA b
   ~250KB/~480KB patched binaries and a few md5s differ. `luna-tls13`'s webOS-2.x build is
   byte-identical across all three phones; `mojomail-imap-tagfix` is postinst-only. Family total ~2.7MB.
 - **Single-board targets are untouched.** `tgt_suffix`/`tgt_boards` return `""`/`"$dev"` for a real
-  board, so `ipks/topaz/` keeps the historical flat payload filenames. A rebuild-and-compare of all
-  four topaz ipks showed only the intended `BS_FILE=`/`DL_FILE=` indirection line.
+  board, so `ipks/tablet/` keeps the historical flat payload filenames. A rebuild-and-compare of all
+  four tablet ipks showed only the intended `BS_FILE=`/`DL_FILE=` indirection line.
 - **`prebuilt_rpath()`** lets `phone` be rebuilt on a checkout with no stock Palm binaries
   (`devices/<board>/*.bin` is gitignored) by extracting the already-RPATH'd binary from the committed
   per-board ipk — verified bit-identical to all six shipped binaries. The stock md5 for the postinst's
@@ -145,15 +145,36 @@ IMAP+SMTP (Fastmail, TLS 1.3), and Gmail IMAP/POP/SMTP (TLS 1.2, see the ECDSA b
 - **Status:** hardware-verified on an **HP Pre 3**. Veer (broadway) and Pre 2 (roadrunner) are built
   and published but untested on hardware.
 
-## Two committed-artifact drifts worth fixing sometime
-Found by rebuilding topaz and diffing against the committed ipks (both confirmed NOT caused by the
-`phone` work):
-- `ipks/topaz/downloadmgr-tls13`'s committed control lacks the `on $PRODUCT` / `($dev)` strings the
-  current script emits — that ipk was built from an older `build-ipks.sh`.
-- `ipks/topaz/luna-tls13` ships a **457,924B** `setcpushares-pdk.wrap`, but the committed prebuilt
-  `setcpushares-pdk-wrap.bin` is **382,496B**. The shipped one was cross-compiled with PalmPDK; a
-  build on a host without `/opt/PalmPDK` silently substitutes the smaller prebuilt. **Don't rebuild
-  luna for topaz without the toolchain** unless you mean to change that payload.
+## The TouchPad Go (opal) — covered by the 3.0.5 tablet build, no packages of its own
+- **A Doctor exists that brings every Go variant to webOS 3.0.5, so the Go takes the `topaz`
+  packages.** The old `go` target and its `-3.0.4` packages, `ipks/opal/` and `devices/opal/` are
+  GONE (unwound 2026-08-04). `ipks/topaz/` is now **`ipks/tablet/`** — same board-keyed build inputs
+  (`./build-ipks.sh topaz`, `devices/topaz/`), a folder named for what it serves (both 3.0.5 tablets).
+- **Hardware-proven on a doctored Go** (`opal`, `Nova-HP-Opal` build 1026, `PRODUCT_VERSION_STRING=HP
+  webOS 3.0.5`): it runs topaz's RPATH'd `BrowserServer` `a56bf4fe…` and `LunaDownloadMgr`
+  `de784d7f…`, and takes the IMAP tagfix. Its **stock** binaries are NOT the TouchPad's:
+  BrowserServer `aae93132…` (vs `0786bdf6…` — same 252,564 bytes, 2.6 % different), LunaDownloadMgr
+  `d9c59339…` (vs `587f1a9f…`), mojomail-imap `df8d18e4…` (vs `9f6489ae…`, `~A` at **991664** not
+  991784, patched `d127895e…`).
+- **So the install guard keys on `PRODUCT_VERSION_STRING`, NOT the stock md5** (md5 is a per-DEVICE
+  fact; per-BUILD is what governs the vtable). Wrong version → `exit 1` before touching anything (a
+  3.0.4 Go is told to doctor itself); unknown stock md5 on a matching version → NOTE, proceed;
+  version unreadable → fall back to the md5 rule. `mojomail-imap-tagfix` matches the LIVE binary
+  against `dev_imap_variants()` (a `stock:patched:offset` list per board), so one package covers both
+  tablets — before this it silently no-op'd on a Go.
+- **Don't "fix" a Go by re-adding a board-specific package** — that is exactly what was removed. The
+  earlier print-dialog bug was 3.0.4-vs-3.0.5 vtable skew (`opal-touchpad-go-vtable-print-bug` memory),
+  and doctoring to 3.0.5 is the fix.
+
+## Committed-artifact drift — both resolved 2026-08-04 (keep the toolchain rule)
+Both drifts found by the `phone` work are gone: all four `ipks/tablet/` ipks were rebuilt during the
+opal unwind and now match what `build-ipks.sh` emits (only their postinsts/controls changed; every
+payload byte-identical, verified by unpack-and-diff).
+- **The toolchain rule still stands.** `luna-tls13` ships **457,924B** env-scrub wrappers, but the
+  committed prebuilt `setcpushares-pdk-wrap.bin` is **382,496B**: a build on a host without
+  `/opt/PalmPDK` silently substitutes the smaller prebuilt. **Don't rebuild luna without the
+  toolchain** unless you mean to change that payload. This Linux box HAS `/opt/PalmPDK/arm-gcc`, and a
+  rebuild here reproduced all three wrappers byte-for-byte (verified).
 
 ## Critical gotchas (these bit us repeatedly — heed them)
 - **App-Manager installs (Preware / WebOS Quick Install) ≠ `ipkg install`.** They unpack into the offline-root `/media/cryptofs/apps` and run a top-level **`pmPostInstall.script`** ar member, NOT the Debian `postinst`. So every package ships BOTH (the Debian postinst/prerm AND pmPostInstall.script/pmPreRemove.script as ar members) and the scripts **self-default `IPKG_OFFLINE_ROOT=/media/cryptofs/apps`**.

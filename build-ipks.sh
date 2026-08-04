@@ -40,24 +40,24 @@ OUT="$BASE/ipks"; ARCH="armv7"
 # (legacy top-level BrowserServer.bin is still honored as topaz's, for back-compat.)
 # webOS device codenames (from palm-build-info BUILDNAME):
 #   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  roadrunner=Pre 2(2.2.4)  broadway=Veer(2.2.4)
-#   opal=TouchPad Go -- a registered BOARD but deliberately NOT in ALL_DEVICES; it ships
-#   only through the 'go' TARGET below, as -3.0.4 packages. Keeping it out of this list is
-#   what stops a bare `./build-ipks.sh` from emitting an unsuffixed opal ipk that would
-#   collide with topaz's on ipkg's Package+Version+Arch key. Its dev_* registry entries are
-#   keyed by board name and work fine without membership here.
 #
-# !! opal is NOT a single webOS version. The TouchPad Go shipped as BOTH 3.0.4 and 3.0.5,
-# depending on its cellular modem chipset, so BOARD NAME DOES NOT IMPLY BUILD. Everything
-# here (dev_bs_md5, dev_dlmgr_md5, dev_imap_*) is the 3.0.4 build; a 3.0.5 Go is NOT covered.
+# The HP TouchPad Go (board 'opal') has NO entry of its own: a Doctor exists that brings
+# every Go variant up to webOS 3.0.5, and at 3.0.5 the topaz packages are the right build
+# for it. The Go's own binaries are NOT byte-identical to the TouchPad's -- verified on a
+# doctored Go, stock BrowserServer aae93132.. vs topaz 0786bdf6.., stock LunaDownloadMgr
+# d9c59339.. vs 587f1a9f.. -- but the webOS BUILD is the same, and the build is what governs
+# compatibility, so topaz's patched binaries run correctly there (hardware-proven). That is
+# why the install guards below key on the reported webOS VERSION, not on a stock md5.
 #
 # What must match is the webOS BUILD, because 3.0.5 adds five Palm::WebViewClient sensor
 # virtuals (createSensor/destroySensor/getSupportedSensors/setSensorRate/startSensor) in the
 # MIDDLE of the vtable, so vtable-for-BrowserPage is 125 slots on 3.0.4 vs 130 on 3.0.5.
 # libWebKitLuna.so calls that vtable BY INDEX, so mixing builds shifts every slot from 36 up
 # by +5 -- 3.0.4 slot 43 setCanBlitOnScroll(bool) (called on every page layout) and 3.0.5
-# showPrintDialog() trade places, which is why navigating raised the print dialog. Never
-# cross-install a BrowserServer between webOS builds; the postinst's stock-md5 guard (see
-# the browser-tls13 section) now enforces that at install time.
+# showPrintDialog() trade places, which is why navigating an un-doctored 3.0.4 Go handed the
+# topaz binary raised the print dialog. Never cross-install a BrowserServer between webOS
+# builds; the postinst's webOS-version guard (see the browser-tls13 section) enforces that
+# at install time -- which is also what declines a Go still on 3.0.4 (doctor it to 3.0.5).
 ALL_DEVICES="topaz mantaray roadrunner broadway"
 # --- the 'phone' MULTI-BOARD target -------------------------------------------
 # A package manager cannot tell four ipks apart when they share Package + Version +
@@ -87,53 +87,28 @@ ALL_DEVICES="topaz mantaray roadrunner broadway"
 # TouchPad packages are untouched and byte-identical.
 PHONE_BOARDS="mantaray broadway roadrunner"
 PHONE_TARGET="phone"
-# --- the 'go' target: TouchPad Go (opal) --------------------------------------
-# The Go is a ONE-board target, so it needs none of the bundling the phones do -- but it
-# does need its own PACKAGE NAME. topaz and opal ipks are both browser-tls13 at the same
-# Version+Architecture, and that triple is exactly ipkg's dedupe key, so in any feed the two
-# tablets' packages collide and a Go can be handed the topaz build. That is not hypothetical:
-# it is how the Go ended up running a 3.0.5 BrowserServer against its 3.0.4 libWebKitLuna,
-# raising the print dialog on every navigation (vtable slot 43 setCanBlitOnScroll ->
-# showPrintDialog; see the opal note on ALL_DEVICES).
-#
-# A distinct name is the whole fix, and reusing the phone target's suffix machinery gets it
-# for the cost of two case arms. It also inherits the machineName board-detect guard, so the
-# package HARD-REFUSES to install on a TouchPad (and topaz's unsuffixed package stays
-# byte-identical -- the Go never shared a name with it again).
-#
-# Build with:  ./build-ipks.sh go        (or 'go browser', etc.)
-# Output:      ipks/opal/org.webosinternals.<pkg>-3.0.4_<ver>_armv7.ipk
-# The suffix is the webOS VERSION, not the board, and that is deliberate: opal shipped at both
-# 3.0.4 and 3.0.5, we only have a 3.0.4 Go to build and test against, and the name should say
-# so out loud rather than implying it covers every Go. A 3.0.5 Go would get its own build.
-# Note the split: the OUTPUT DIR is keyed by board codename (opal, matching devices/opal/ and
-# every other per-device dir), while the PACKAGE SUFFIX carries the webOS version. tgt_outdir()
-# below is what decouples the two; every other target's dir still equals its target name.
-# (Dots are legal in Debian/ipkg package names, and these names already contain several.)
-GO_BOARDS="opal"
-GO_TARGET="go"
 # Package-name suffix + the boards a target bundles. Single-board targets keep the
 # historical flat payload filenames so their ipks stay byte-identical to before.
-tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; "$GO_TARGET") echo "-3.0.4";; *) echo "";; esac; }
-tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
-# Output subdir under ipks/. Defaults to the target name; the 'go' target overrides it to its
-# board codename so the tree stays board-keyed (ipks/opal/ alongside devices/opal/).
-tgt_outdir() { case "$1" in "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
+tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; *) echo "";; esac; }
+tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; *) echo "$1";; esac; }
+# Output subdir under ipks/. The target's own name, EXCEPT topaz -> tablet: those packages
+# serve BOTH webOS 3.0.5 tablets (HP TouchPad and a TouchPad Go doctored to 3.0.5), so a
+# folder named after one of the two boards reads as "the Go isn't covered". Everything on the
+# INPUT side stays board-keyed (devices/<board>/, the dev_* registry, machineName) -- only
+# this output folder is named for what it serves.
+tgt_outdir() { case "$1" in topaz) echo "tablet";; *) echo "$1";; esac; }
 dev_product() { case "$1" in
-  topaz)      echo "HP TouchPad (webOS 3.0.5)";;
-  opal)       echo "HP TouchPad Go (webOS 3.0.4)";;
+  topaz)      echo "HP TouchPad / TouchPad Go (webOS 3.0.5)";;
   mantaray)   echo "HP Pre 3 (webOS 2.2.4)";;
   roadrunner) echo "Palm Pre 2 (webOS 2.2.4)";;
   broadway)   echo "HP Veer (webOS 2.2.4)";;
   phone)      echo "webOS 2.2.4 phones (HP Pre 3 / HP Veer / Palm Pre 2)";;
-  go)         echo "HP TouchPad Go (webOS 3.0.4)";;
   *)          echo "webOS device ($1)";;
 esac; }
 # Expected STOCK BrowserServer md5 -- used ONLY to verify a novacom AUTO-FETCH grabbed
 # a clean/unpatched binary. Empty => skip that guard (trust a supplied .bin).
 dev_bs_md5() { case "$1" in
   topaz)      echo "0786bdf698220aa82a90838e30355c9f";;   # TouchPad
-  opal)       echo "46b8295b41663c65738f46760d4889fa";;   # TouchPad Go (3.0.4, build 3710)
   mantaray)   echo "44d2b0ce0fa4f1e0c660039676df5e36";;   # Pre 3
   roadrunner) echo "d7dcd8a05995859c36cf8e9db3c13b25";;   # Pre 2
   broadway)   echo "6b3eddf2581ed869beedba253bb35227";;   # Veer
@@ -141,7 +116,6 @@ dev_bs_md5() { case "$1" in
 esac; }
 dev_novacom() { case "$1" in   # novacom -l device-id token, for auto-fetch matching
   topaz)      echo "topaz";;
-  opal)       echo "opal";;
   mantaray)   echo "mantaray";;
   broadway)   echo "broadway";;
   roadrunner) echo "roadrunner";;
@@ -150,29 +124,28 @@ esac; }
 # webOS major family. Gates luna-tls13's env-scrub wrappers: 3.0.5 (LunaCE) needs the
 # media-pipeline / setcpushares-pdk / setcpushares-task wrappers; webOS 2.x does not
 # (no LunaCE; setcpushares-pdk doesn't even exist) -> 2.x gets a clean launcher-only luna.
-# Exact webOS build a board's payload was taken from. This -- not the board name -- is what
-# determines vtable compatibility: opal (TouchPad Go) shipped as BOTH 3.0.4 and 3.0.5
-# depending on the cellular modem chipset, so "board == opal" does NOT imply 3.0.4. Used for
-# the postinst's error message; the actual gate is the stock BrowserServer md5, which
-# identifies the build exactly.
+# Exact webOS build a board's payload was taken from. This -- not the board name, and not the
+# stock binary's md5 -- is what determines whether a patched binary is safe to install: the
+# TouchPad and a doctored TouchPad Go both run webOS 3.0.5 with the same vtables but DIFFERENT
+# stock binaries. So this is the value the postinst guards compare against the device's own
+# PRODUCT_VERSION_STRING.
 dev_osver() { case "$1" in
   topaz)      echo "3.0.5";;
-  opal|go)    echo "3.0.4";;
   mantaray|broadway|roadrunner|phone) echo "2.2.4";;
   *)          echo "unknown";;
 esac; }
 dev_webos() { case "$1" in
   topaz)      echo "3";;
-  opal)       echo "3";;   # TouchPad Go is webOS 3.x -- same LunaCE-era wrappers as topaz
   mantaray|broadway|roadrunner) echo "2";;
   phone)      echo "2";;   # every board in the phone bundle is webOS 2.x
-  go)         echo "3";;   # the go target's only board is opal (webOS 3.0.4)
   *)          echo "2";;
 esac; }
 # Emit the shell that resolves the running board into $BOARD, for the postinst of a
 # multi-board package. Primary source is machineName (what Preware's ipkgservice reads,
 # and proven to return e.g. "roadrunner" on a Pre 2); /etc/palm-build-info is a fallback,
-# matched only against the known board names so it cannot land on the wrong one.
+# matched only against the known board names so it cannot land on the wrong one. 'opal'
+# (TouchPad Go) is in the list purely so a Go gets a NAMED refusal from the phone bundle --
+# no package targets it any more; a doctored (3.0.5) Go takes the topaz packages.
 emit_board_detect() { cat <<'EOF'
 BOARD=""
 if [ -r /etc/prefs/properties/machineName ]; then
@@ -188,40 +161,28 @@ EOF
 # Expected stock LunaDownloadMgr md5 (downloadmgr-tls13) -- verify auto-fetch only; empty=>skip.
 dev_dlmgr_md5() { case "$1" in
   topaz)      echo "587f1a9f51c3e6e1c905e44e55ea6193";;   # TouchPad
-  opal)       echo "dc7bc98ad060c7226630f1de888bcb93";;   # TouchPad Go
   mantaray)   echo "44035016e79c7787017c7e218aef00cc";;   # Pre 3
   roadrunner) echo "444b88f2b2a01278692de74848af5b92";;   # Pre 2
   broadway)   echo "549fa933af41e043257ef8f2fbc655b7";;   # Veer
   *)          echo "";;
 esac; }
-# mojomail-imap-tagfix: stock md5 / patched md5 / file offset of the "~A"->"AA" tag byte.
-# All three are per-build (offset moves between webOS builds). Empty stock md5 => device
-# skipped (unknown offset). Recompute for a new device: find the single "~A", flip 0x7e->0x41.
-dev_imap_stock_md5()   { case "$1" in
-  topaz)      echo "9f6489ae48fc131733c1a88a9aa1056a";;   # TouchPad
-  opal)       echo "ff74509f03889713145c474efc7b38a9";;   # TouchPad Go
-  mantaray)   echo "291dbc5f6cc52392e4d653d39e528226";;   # Pre 3
-  roadrunner) echo "b38230f8a0bc26c932caf7050fb93297";;   # Pre 2
-  broadway)   echo "b308c86c598d66d39403bca73edfb366";;   # Veer
+# mojomail-imap-tagfix: the mojomail-imap builds this board may be running, as
+# "<stock md5>:<patched md5>:<offset of the ~A tag byte>" entries, whitespace-separated.
+# All three values are per-BINARY (the offset moves between builds), and one board can have
+# more than one binary in the wild: a TouchPad and a doctored TouchPad Go are both webOS
+# 3.0.5, so both take the topaz package, but they ship DIFFERENT mojomail-imap builds. The
+# postinst matches the live binary's md5 against this list, so the package covers every
+# listed variant and declines anything else. Empty => board skipped (no known binary).
+# Add a variant: find the single "~A" in the binary (offset), flip 0x7e->0x41, md5 both.
+dev_imap_variants() { case "$1" in
+  topaz)      echo "9f6489ae48fc131733c1a88a9aa1056a:78956f6daf374a9a940e914459f234c3:991784
+                    df8d18e4e3bbd3dbbe2a2e1fa32c9921:d127895e6d5d1b2c009fd11ea03cfbad:991664";;  # TouchPad; TouchPad Go 3.0.5 (0xf21b0)
+  mantaray)   echo "291dbc5f6cc52392e4d653d39e528226:9cf606e11683d35b8f8da2145a23afc6:988724";;   # Pre 3
+  roadrunner) echo "b38230f8a0bc26c932caf7050fb93297:3d614527bcaada9820e753b5eb600a17:988740";;   # Pre 2
+  broadway)   echo "b308c86c598d66d39403bca73edfb366:00a991bbe527ff9e8d45fb0bfefd90f4:988620";;   # Veer
   *)          echo "";;
 esac; }
-dev_imap_patched_md5() { case "$1" in
-  topaz)      echo "78956f6daf374a9a940e914459f234c3";;   # TouchPad
-  opal)       echo "831068d42def27acca5dc091a89e9a13";;   # TouchPad Go
-  mantaray)   echo "9cf606e11683d35b8f8da2145a23afc6";;   # Pre 3
-  roadrunner) echo "3d614527bcaada9820e753b5eb600a17";;   # Pre 2
-  broadway)   echo "00a991bbe527ff9e8d45fb0bfefd90f4";;   # Veer
-  *)          echo "";;
-esac; }
-dev_imap_offset()      { case "$1" in
-  topaz)      echo "991784";;   # TouchPad
-  opal)       echo "991664";;   # TouchPad Go (0xf21b0)
-  mantaray)   echo "988724";;   # Pre 3
-  roadrunner) echo "988740";;   # Pre 2
-  broadway)   echo "988620";;   # Veer
-  *)          echo "";;
-esac; }
-is_device() { case " $ALL_DEVICES $PHONE_TARGET $GO_TARGET " in *" $1 "*) return 0;; *) return 1;; esac; }
+is_device() { case " $ALL_DEVICES $PHONE_TARGET " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 # downloadmgr_for <dev>: echo a verified stock LunaDownloadMgr path (stderr progress), or
 # non-zero if none. Prefers devices/<dev>/LunaDownloadMgr.bin; falls back to novacom fetch.
@@ -254,7 +215,7 @@ downloadmgr_for() {
 }
 
 # prebuilt_rpath <board> <pkgbase> <version> <member>: echo a path to a temp copy of the
-# ALREADY-RPATH'd binary taken out of a previously built per-board ipk in ipks/<board>/,
+# ALREADY-RPATH'd binary taken out of a previously built per-board ipk in ipks/<tgt_outdir>/,
 # or return non-zero if that ipk isn't there. This is what lets the multi-board 'phone'
 # bundle be rebuilt on a checkout that lacks the (gitignored, proprietary) stock Palm
 # binaries -- and it is not a shortcut: the committed per-board ipk already holds exactly
@@ -263,7 +224,7 @@ downloadmgr_for() {
 # non-stock binary" NOTE) then has to come from the registry instead of a live md5sum.
 prebuilt_rpath() {
   local b="$1" base="$2" ver="$3" member="$4" ipk out
-  ipk="$OUT/$b/org.webosinternals.${base}_${ver}_${ARCH}.ipk"
+  ipk="$OUT/$(tgt_outdir "$b")/org.webosinternals.${base}_${ver}_${ARCH}.ipk"
   [ -f "$ipk" ] || return 1
   out="$(mktemp "${TMPDIR:-/tmp}/rpathbin.XXXXXX")" || return 1
   if ! "$AR" p "$ipk" data.tar.gz 2>/dev/null \
@@ -288,8 +249,8 @@ for a in ${DEVICE:-} "$@"; do
     all) WANT="$WANT all";;
     browser|ntp|curl|luna|mail|imaptagfix|downloadmgr) WANT="$WANT $a";;
     *) echo "ERROR: unknown argument '$a'" >&2
-       echo "       devices:  $ALL_DEVICES (or 'alldevices', or '$PHONE_TARGET' = all webOS 2.x phones in one ipk," >&2
-       echo "                 or '$GO_TARGET' = TouchPad Go (webOS 3.0.4) as its own -3.0.4 package)" >&2
+       echo "       devices:  $ALL_DEVICES (or 'alldevices', or '$PHONE_TARGET' = all webOS 2.x phones in one ipk)" >&2
+       echo "                 (a TouchPad Go doctored to 3.0.5 takes the 'topaz' packages)" >&2
        echo "       packages: browser ntp curl luna mail imaptagfix downloadmgr all" >&2
        exit 1;;
   esac; fi
@@ -414,7 +375,7 @@ mkdir -p "$OUT"
 # Blanket-clean only for a full build; a selective rebuild keeps unselected ipks
 # (pack() removes each package's own ipk before repacking, so this is safe).
 # Blanket-clean ONLY for a genuinely full build -- all packages AND no device/target was
-# named. A device-only invocation (e.g. `./build-ipks.sh go`, `./build-ipks.sh phone`) leaves
+# named. A device-only invocation (e.g. `./build-ipks.sh topaz`, `./build-ipks.sh phone`) leaves
 # WANT empty, which defaults to "all"; without the DEV_ARGS_GIVEN guard that wiped every
 # OTHER device's ipks while rebuilding only the named one. pack() removes each package's own
 # ipk before repacking, so skipping the blanket clean here is safe.
@@ -460,7 +421,7 @@ for b in $boards; do
   pre=""
   [ -z "$bs" ] && { pre="$(prebuilt_rpath "$b" browser-tls13 "$TLSVER" BrowserServer.rpath)" || pre=""; }
   if [ -z "$bs" ] && [ -z "$pre" ]; then
-    echo "  browser-tls13$sfx: SKIP board $b -- no stock BrowserServer (devices/$b/BrowserServer.bin) and no prebuilt ipks/$b/ ipk to reuse"
+    echo "  browser-tls13$sfx: SKIP board $b -- no stock BrowserServer (devices/$b/BrowserServer.bin) and no prebuilt ipks/$(tgt_outdir "$b")/ ipk to reuse"
     continue
   fi
   if [ -n "$sfx" ]; then bsf="BrowserServer.rpath.$b"; else bsf="BrowserServer.rpath"; fi
@@ -472,7 +433,7 @@ for b in $boards; do
   else
     s_md5="$(dev_bs_md5 "$b")"          # no stock binary here; take its md5 from the registry
     cp "$pre" "$F/$bsf"; chmod 0644 "$F/$bsf"; rm -f "$pre"
-    echo "  [$dev/$b] reusing the already-RPATH'd BrowserServer from ipks/$b (no stock binary in this checkout)"
+    echo "  [$dev/$b] reusing the already-RPATH'd BrowserServer from ipks/$(tgt_outdir "$b") (no stock binary in this checkout)"
   fi
   r_md5=$(md5sum "$F/$bsf" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
   echo "  [$dev/$b] $(dev_product "$b"): stock $s_md5 -> RPATH'd $r_md5"
@@ -532,28 +493,42 @@ EOF
 fi
 cat >> "$B/control/postinst" <<'EOF'
 # --- webOS-BUILD guard (must run before anything is touched) ------------------
-# The binary we swap in DEFINES the BrowserPage vtable that libWebKitLuna calls BY INDEX,
-# so it is only valid on the exact webOS build it was taken from. Board is NOT a sufficient
-# discriminator: opal (TouchPad Go) shipped as both webOS 3.0.4 and 3.0.5 depending on the
-# cellular modem chipset, and 3.0.5 inserts five Palm::WebViewClient sensor virtuals into the
-# MIDDLE of that vtable (125 slots on 3.0.4 vs 130 on 3.0.5) -- every slot from 36 up shifts by
-# five, so 3.0.4's setCanBlitOnScroll(bool) and 3.0.5's showPrintDialog() trade places.
-# The stock BrowserServer md5 identifies the build exactly, so gate on that: compare against
-# the device's OWN stock binary (the backup if we already made one, else what is live now).
+# The binary we swap in DEFINES the BrowserPage vtable that libWebKitLuna calls BY INDEX, so
+# it is only valid on the webOS BUILD it was taken from: 3.0.5 inserts five Palm::WebViewClient
+# sensor virtuals into the MIDDLE of that vtable (125 slots on 3.0.4 vs 130 on 3.0.5) -- every
+# slot from 36 up shifts by five, so 3.0.4's setCanBlitOnScroll(bool) and 3.0.5's
+# showPrintDialog() trade places (an un-doctored 3.0.4 TouchPad Go handed this binary raises the
+# print dialog on every navigation).
+# Gate on the webOS VERSION, which is exactly the invariant that matters -- NOT on the stock
+# md5, which is a per-DEVICE fact: a TouchPad and a doctored TouchPad Go both run 3.0.5 with
+# the same vtable but different stock BrowserServers (0786bdf6.. vs aae93132..), and the topaz
+# binary is proven correct on both. A stock md5 we don't recognise on a matching build is worth
+# a note, not a refusal. If the version can't be read at all, fall back to the md5 check.
 if [ -f /usr/bin/BrowserServer.tls13-orig ]; then
     ref=$(md5sum /usr/bin/BrowserServer.tls13-orig 2>/dev/null | cut -d' ' -f1)
 else
     ref=$(md5sum /usr/bin/BrowserServer 2>/dev/null | cut -d' ' -f1)
 fi
 osv=$(sed -n 's/^PRODUCT_VERSION_STRING=.* \([0-9][0-9.]*\)$/\1/p' /etc/palm-build-info 2>/dev/null | head -1)
-if [ -n "$ref" ] && [ "$ref" != "$STOCK_BS_MD5" ] && [ "$ref" != "$RPATH_BS_MD5" ]; then
-    echo "browser-tls13: ERROR -- this package targets webOS $EXPECT_OSVER, whose stock"
-    echo "  BrowserServer is $STOCK_BS_MD5."
-    echo "  This device reports webOS ${osv:-unknown} with stock BrowserServer $ref."
+if [ -n "$osv" ] && [ "$osv" != "$EXPECT_OSVER" ]; then
+    echo "browser-tls13: ERROR -- this package targets webOS $EXPECT_OSVER; this device"
+    echo "  reports webOS $osv (stock BrowserServer ${ref:-unknown})."
     echo "  The patched binary defines the BrowserPage vtable that libWebKitLuna calls by"
     echo "  index, so using it across webOS builds misroutes virtual calls and breaks the"
     echo "  browser. NOT patching -- a build for this device's webOS version is needed."
+    echo "  (A TouchPad Go on 3.0.4 should be doctored to 3.0.5, which this package covers.)"
     exit 1
+fi
+if [ -z "$osv" ] && [ -n "$ref" ] && [ "$ref" != "$STOCK_BS_MD5" ] && [ "$ref" != "$RPATH_BS_MD5" ]; then
+    echo "browser-tls13: ERROR -- cannot read this device's webOS version from"
+    echo "  /etc/palm-build-info, and its stock BrowserServer ($ref) is not the webOS"
+    echo "  $EXPECT_OSVER one ($STOCK_BS_MD5). NOT patching."
+    exit 1
+fi
+if [ -n "$ref" ] && [ "$ref" != "$STOCK_BS_MD5" ] && [ "$ref" != "$RPATH_BS_MD5" ]; then
+    echo "browser-tls13: NOTE -- stock BrowserServer $ref is not the one this package was"
+    echo "  built from ($STOCK_BS_MD5), but this device is webOS $osv as expected"
+    echo "  (e.g. a doctored TouchPad Go) -- same vtable, proceeding."
 fi
 
 # App-Manager installs offline under /media/cryptofs/apps and leaves the root ro;
@@ -1346,18 +1321,23 @@ for dev in $DEVICES; do
   sfx="$(tgt_suffix "$dev")"; boards="$(tgt_boards "$dev")"
   ID6="org.webosinternals.mojomail-imap-tagfix$sfx"
   PRODUCT="$(dev_product "$dev")"
-  # No payload at all -- the only per-board facts are the byte offset and the two md5s.
+  # No payload at all -- the only per-board facts are the known mojomail-imap builds, as
+  # <stock md5>:<patched md5>:<offset> variants. A board can have several (a TouchPad and a
+  # doctored TouchPad Go are both 3.0.5 but ship different mojomail-imap builds); the postinst
+  # picks by matching the live binary's md5, so one package covers them all.
   IMAP_CASES=""; staged6=""
   for b in $boards; do
-    i_stock="$(dev_imap_stock_md5 "$b")"; i_patched="$(dev_imap_patched_md5 "$b")"; i_off="$(dev_imap_offset "$b")"
-    if [ -z "$i_stock" ] || [ -z "$i_patched" ] || [ -z "$i_off" ]; then
-      echo "  mojomail-imap-tagfix$sfx: SKIP board $b -- no known mojomail-imap tag offset/md5 (add it to dev_imap_* in the registry)"
+    i_vars="$(dev_imap_variants "$b" | tr -s ' \t\n' ' ' | sed 's/^ //; s/ $//')"
+    if [ -z "$i_vars" ]; then
+      echo "  mojomail-imap-tagfix$sfx: SKIP board $b -- no known mojomail-imap tag offset/md5 (add it to dev_imap_variants in the registry)"
       continue
     fi
-    echo "  [$dev/$b] $(dev_product "$b"): mojomail-imap-tagfix (offset $i_off, stock $i_stock -> patched $i_patched)"
-    IMAP_CASES="$IMAP_CASES  $b) STOCK_IMAP_MD5=$i_stock; PATCHED_IMAP_MD5=$i_patched; IMAP_OFF=$i_off;;
+    for v in $i_vars; do
+      echo "  [$dev/$b] $(dev_product "$b"): mojomail-imap-tagfix variant (offset ${v##*:}, stock ${v%%:*} -> patched $(printf %s "$v" | cut -d: -f2))"
+    done
+    IMAP_CASES="$IMAP_CASES  $b) IMAP_VARIANTS=\"$i_vars\";;
 "
-    ISTOCK1="$i_stock"; IPATCHED1="$i_patched"; IOFF1="$i_off"
+    IVARS1="$i_vars"
     staged6="$staged6 $b"
   done
   if [ -z "$(printf %s "$staged6" | tr -d ' ')" ]; then
@@ -1395,9 +1375,7 @@ esac
 EOF
   else
     cat >> "$B6/control/postinst" <<EOF
-STOCK_IMAP_MD5=$ISTOCK1
-PATCHED_IMAP_MD5=$IPATCHED1
-IMAP_OFF=$IOFF1
+IMAP_VARIANTS="$IVARS1"
 EOF
   fi
   cat >> "$B6/control/postinst" <<'EOF'
@@ -1406,6 +1384,14 @@ mount -o remount,rw / 2>/dev/null || true
 mkdir -p /var/luna 2>/dev/null
 if [ ! -f "$IMAPBIN" ]; then echo "mojomail-imap-tagfix: $IMAPBIN not found -- nothing to patch."; exit 0; fi
 im=$(md5sum "$IMAPBIN" | cut -d' ' -f1)
+# Pick the variant whose stock (or already-patched) md5 is what's actually on this device.
+STOCK_IMAP_MD5=""; PATCHED_IMAP_MD5=""; IMAP_OFF=""
+for v in $IMAP_VARIANTS; do
+    vs=${v%%:*}; vr=${v#*:}; vp=${vr%%:*}; vo=${vr#*:}
+    if [ "$im" = "$vs" ] || [ "$im" = "$vp" ]; then
+        STOCK_IMAP_MD5=$vs; PATCHED_IMAP_MD5=$vp; IMAP_OFF=$vo; break
+    fi
+done
 if [ "$im" = "$STOCK_IMAP_MD5" ]; then
     cp -f "$IMAPBIN" /var/luna/mojomail-imap.tagfix-orig
     # Patch a SAME-FILESYSTEM temp copy then atomically mv over the original. An in-place dd
@@ -1480,7 +1466,7 @@ for b in $boards; do
   pre=""
   [ -z "$dl" ] && { pre="$(prebuilt_rpath "$b" downloadmgr-tls13 "$DOWNVER" LunaDownloadMgr.rpath)" || pre=""; }
   if [ -z "$dl" ] && [ -z "$pre" ]; then
-    echo "  downloadmgr-tls13$sfx: SKIP board $b -- no stock LunaDownloadMgr (devices/$b/LunaDownloadMgr.bin) and no prebuilt ipks/$b/ ipk to reuse"
+    echo "  downloadmgr-tls13$sfx: SKIP board $b -- no stock LunaDownloadMgr (devices/$b/LunaDownloadMgr.bin) and no prebuilt ipks/$(tgt_outdir "$b")/ ipk to reuse"
     continue
   fi
   if [ -n "$sfx" ]; then dlf="LunaDownloadMgr.rpath.$b"; else dlf="LunaDownloadMgr.rpath"; fi
@@ -1491,7 +1477,7 @@ for b in $boards; do
   else
     s_md5="$(dev_dlmgr_md5 "$b")"       # no stock binary here; take its md5 from the registry
     cp "$pre" "$F7/$dlf"; chmod 0644 "$F7/$dlf"; rm -f "$pre"
-    echo "  [$dev/$b] reusing the already-RPATH'd LunaDownloadMgr from ipks/$b (no stock binary in this checkout)"
+    echo "  [$dev/$b] reusing the already-RPATH'd LunaDownloadMgr from ipks/$(tgt_outdir "$b") (no stock binary in this checkout)"
   fi
   r_md5=$(md5sum "$F7/$dlf" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
   echo "  [$dev/$b] $(dev_product "$b"): stock $s_md5 -> RPATH'd $r_md5"
@@ -1546,22 +1532,28 @@ EOF
 fi
 cat >> "$B7/control/postinst" <<'EOF'
 # --- webOS-BUILD guard (must run before anything is touched) ------------------
-# Same reasoning as browser-tls13: a stock binary is only valid on the webOS build it came
-# from, and board is not a sufficient discriminator (opal shipped as both 3.0.4 and 3.0.5).
-# LunaDownloadMgr is far less exposed than BrowserServer -- its five vtables are identical
-# between 3.0.4 and 3.0.5 and nothing links against an executable -- but swapping a binary
-# across builds is still wrong, so gate on the stock md5, which identifies the build exactly.
+# Same reasoning as browser-tls13: a stock binary is only valid on the webOS BUILD it came
+# from, and the reported webOS version -- not the stock md5 -- is what identifies that build
+# across devices (a TouchPad and a doctored TouchPad Go are both 3.0.5 with different stock
+# LunaDownloadMgrs, 587f1a9f.. vs d9c59339..). LunaDownloadMgr is far less exposed than
+# BrowserServer -- its five vtables are identical between 3.0.4 and 3.0.5 and nothing links
+# against an executable -- but swapping a binary across builds is still wrong.
 if [ -f /var/luna/LunaDownloadMgr.tls13-orig ]; then
     ref=$(md5sum /var/luna/LunaDownloadMgr.tls13-orig 2>/dev/null | cut -d' ' -f1)
 else
     ref=$(md5sum /usr/bin/LunaDownloadMgr 2>/dev/null | cut -d' ' -f1)
 fi
 osv=$(sed -n 's/^PRODUCT_VERSION_STRING=.* \([0-9][0-9.]*\)$/\1/p' /etc/palm-build-info 2>/dev/null | head -1)
-if [ -n "$ref" ] && [ "$ref" != "$STOCK_DLMGR_MD5" ] && [ "$ref" != "$RPATH_DLMGR_MD5" ]; then
-    echo "downloadmgr-tls13: ERROR -- this package targets webOS $EXPECT_OSVER, whose stock"
-    echo "  LunaDownloadMgr is $STOCK_DLMGR_MD5."
-    echo "  This device reports webOS ${osv:-unknown} with stock LunaDownloadMgr $ref."
+if [ -n "$osv" ] && [ "$osv" != "$EXPECT_OSVER" ]; then
+    echo "downloadmgr-tls13: ERROR -- this package targets webOS $EXPECT_OSVER; this device"
+    echo "  reports webOS $osv (stock LunaDownloadMgr ${ref:-unknown})."
     echo "  NOT patching -- a build for this device's webOS version is needed."
+    exit 1
+fi
+if [ -z "$osv" ] && [ -n "$ref" ] && [ "$ref" != "$STOCK_DLMGR_MD5" ] && [ "$ref" != "$RPATH_DLMGR_MD5" ]; then
+    echo "downloadmgr-tls13: ERROR -- cannot read this device's webOS version from"
+    echo "  /etc/palm-build-info, and its stock LunaDownloadMgr ($ref) is not the webOS"
+    echo "  $EXPECT_OSVER one ($STOCK_DLMGR_MD5). NOT patching."
     exit 1
 fi
 [ -z "$IPKG_OFFLINE_ROOT" ] && IPKG_OFFLINE_ROOT=/media/cryptofs/apps
