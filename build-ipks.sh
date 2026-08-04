@@ -41,7 +41,7 @@ OUT="$BASE/ipks"; ARCH="armv7"
 # webOS device codenames (from palm-build-info BUILDNAME):
 #   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  roadrunner=Pre 2(2.2.4)  broadway=Veer(2.2.4)
 #   opal=TouchPad Go -- a registered BOARD but deliberately NOT in ALL_DEVICES; it ships
-#   only through the 'go' TARGET below, as -go packages. Keeping it out of this list is
+#   only through the 'go' TARGET below, as -3.0.4 packages. Keeping it out of this list is
 #   what stops a bare `./build-ipks.sh` from emitting an unsuffixed opal ipk that would
 #   collide with topaz's on ipkg's Package+Version+Arch key. Its dev_* registry entries are
 #   keyed by board name and work fine without membership here.
@@ -98,19 +98,23 @@ PHONE_TARGET="phone"
 #
 # A distinct name is the whole fix, and reusing the phone target's suffix machinery gets it
 # for the cost of two case arms. It also inherits the machineName board-detect guard, so the
-# -go package HARD-REFUSES to install on a TouchPad (and topaz's unsuffixed package stays
+# package HARD-REFUSES to install on a TouchPad (and topaz's unsuffixed package stays
 # byte-identical -- the Go never shared a name with it again).
 #
 # Build with:  ./build-ipks.sh go        (or 'go browser', etc.)
-# Output:      ipks/opal/org.webosinternals.<pkg>-go_<ver>_armv7.ipk
+# Output:      ipks/opal/org.webosinternals.<pkg>-3.0.4_<ver>_armv7.ipk
+# The suffix is the webOS VERSION, not the board, and that is deliberate: opal shipped at both
+# 3.0.4 and 3.0.5, we only have a 3.0.4 Go to build and test against, and the name should say
+# so out loud rather than implying it covers every Go. A 3.0.5 Go would get its own build.
 # Note the split: the OUTPUT DIR is keyed by board codename (opal, matching devices/opal/ and
-# every other per-device dir), while the PACKAGE SUFFIX is the friendlier -go. tgt_outdir()
+# every other per-device dir), while the PACKAGE SUFFIX carries the webOS version. tgt_outdir()
 # below is what decouples the two; every other target's dir still equals its target name.
+# (Dots are legal in Debian/ipkg package names, and these names already contain several.)
 GO_BOARDS="opal"
 GO_TARGET="go"
 # Package-name suffix + the boards a target bundles. Single-board targets keep the
 # historical flat payload filenames so their ipks stay byte-identical to before.
-tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; "$GO_TARGET") echo "-go";; *) echo "";; esac; }
+tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; "$GO_TARGET") echo "-3.0.4";; *) echo "";; esac; }
 tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
 # Output subdir under ipks/. Defaults to the target name; the 'go' target overrides it to its
 # board codename so the tree stays board-keyed (ipks/opal/ alongside devices/opal/).
@@ -285,7 +289,7 @@ for a in ${DEVICE:-} "$@"; do
     browser|ntp|curl|luna|mail|imaptagfix|downloadmgr) WANT="$WANT $a";;
     *) echo "ERROR: unknown argument '$a'" >&2
        echo "       devices:  $ALL_DEVICES (or 'alldevices', or '$PHONE_TARGET' = all webOS 2.x phones in one ipk," >&2
-       echo "                 or '$GO_TARGET' = TouchPad Go as its own -go package)" >&2
+       echo "                 or '$GO_TARGET' = TouchPad Go (webOS 3.0.4) as its own -3.0.4 package)" >&2
        echo "       packages: browser ntp curl luna mail imaptagfix downloadmgr all" >&2
        exit 1;;
   esac; fi

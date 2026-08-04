@@ -26,7 +26,7 @@ so they are **built per device** and live in per-codename folders under
 [`ipks/`](ipks/). The three phones are additionally published as a **single merged
 set** in [`ipks/phone/`](ipks/phone/) (`*-phone` package names) that picks the right
 board at install time — that is the build a feed should carry. The TouchPad Go ships
-the same way, as `*-go` packages in [`ipks/opal/`](ipks/opal/). See
+the same way, as `*-3.0.4` packages in [`ipks/opal/`](ipks/opal/). See
 [Which packages for which device](#packages).
 
 **What must match is the webOS BUILD, not the board.** The device-specific packages
@@ -42,7 +42,8 @@ mismatched signatures.
 
 **The TouchPad Go (`opal`) shipped at BOTH 3.0.4 and 3.0.5**, depending on its cellular
 modem chipset — so the board name alone does *not* tell you which build you have. The
-`*-go` packages target **webOS 3.0.4 only**. Every device-specific package now verifies
+`*-3.0.4` packages target **webOS 3.0.4 only** — the suffix says so on purpose. Every
+device-specific package now verifies
 the device's own stock binary by md5 (the md5 identifies the webOS build exactly) and
 **refuses to install, before touching anything**, if it doesn't match the build it was
 made for. So a 3.0.5 Go will simply be declined rather than silently broken.
@@ -138,7 +139,7 @@ To be explicit, since this trips people up:
 
 - One of the **[supported devices](#supported-devices)** above: an HP TouchPad on
   **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), an HP TouchPad Go on **webOS 3.0.4**
-  (3.0.5 Gos exist and are *not* covered by the `-go` build — see
+  (3.0.5 Gos exist and are *not* covered by the `-3.0.4` build — see
   [Supported devices](#supported-devices)),
   or a Pre 3 / Veer / Pre 2 on **webOS 2.2.4**. Each has its own build — see
   [Compatibility](#compatibility). The two tablets are **not** interchangeable; a
@@ -161,11 +162,11 @@ prefer the merged [`ipks/phone/`](ipks/phone/) set — same packages with `-phon
 appended to each name, one ipk covering all three boards, resolved at install time
 from `/etc/prefs/properties/machineName`. An unrecognised board (including a
 TouchPad) **exits non-zero before touching anything**. The TouchPad Go uses
-[`ipks/opal/`](ipks/opal/), with `-go` appended to each name and the same
+[`ipks/opal/`](ipks/opal/), with `-3.0.4` appended to each name and the same
 `machineName` guard. Full rationale in [`ipks/README.md`](ipks/README.md).
 
 **Install in this order** (append `-phone` to the device-specific names if you're
-using the merged phone set, or `-go` on a TouchPad Go):
+using the merged phone set, or `-3.0.4` on a webOS 3.0.4 TouchPad Go):
 
 | # | Package | Installs |
 |---|---------|----------|
@@ -273,7 +274,7 @@ different webOS build — send that file to verify the struct offsets for that v
 **Wrong-device protection.** The merged `*-phone` packages resolve the board from
 `/etc/prefs/properties/machineName` (falling back to matching a known board name in
 `/etc/palm-build-info`) and `exit 1` **before touching anything** if it isn't one of
-`mantaray` / `broadway` / `roadrunner` — a TouchPad included. The `*-go` packages in
+`mantaray` / `broadway` / `roadrunner` — a TouchPad included. The `*-3.0.4` packages in
 `ipks/opal/` use the same mechanism, refusing anything but `opal`.
 
 **Wrong-BUILD protection (the one that actually matters).** Board identity is not

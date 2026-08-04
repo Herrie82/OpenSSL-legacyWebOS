@@ -106,7 +106,7 @@ frozen — the `.so` is not rebuilt on-device), and it needs no change to the
 
 ## Hardware validation (topaz, webOS 3.0.5)
 
-*(A **webOS 3.0.4** TouchPad Go build ships as `downloadmgr-tls13-go` in `ipks/opal/`,
+*(A **webOS 3.0.4** TouchPad Go build ships as `downloadmgr-tls13-3.0.4` in `ipks/opal/`,
 RPATH'd from that Go's own stock `LunaDownloadMgr`; `opal` also shipped at 3.0.5, which this
 build does not cover. Its install pass on hardware is still pending. Unlike `BrowserServer`,
 this daemon has no cross-module vtable exposure — its five vtables are identical in name and
