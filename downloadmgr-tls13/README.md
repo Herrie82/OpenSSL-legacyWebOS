@@ -106,6 +106,12 @@ frozen — the `.so` is not rebuilt on-device), and it needs no change to the
 
 ## Hardware validation (topaz, webOS 3.0.5)
 
+*(An `opal` / TouchPad Go build ships as `downloadmgr-tls13-go` in `ipks/opal/`, RPATH'd
+from the Go's own stock `LunaDownloadMgr`. Its install pass on hardware is still pending.
+Unlike `BrowserServer`, this daemon has no cross-module vtable exposure — its five vtables
+are identical in name and size between 3.0.4 and 3.0.5, and nothing links against an
+executable — so the version-skew hazard that affects the browser does not apply here.)*
+
 - Download of `https://www.howsmyssl.com/a/check` → `"tls_version":"TLS 1.3"`, HTTP 200.
 - Download of a Let's Encrypt-served file (ISRG root) → HTTP 200, `completed:true`
   (modern cert validation via the baked bundle, despite the 0.9.8-hashed CAPATH).

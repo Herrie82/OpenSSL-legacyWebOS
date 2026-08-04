@@ -1,4 +1,4 @@
-# Modern TLS for legacy webOS (TouchPad 3.0.5 & 2.2.4 phones)
+# Modern TLS for legacy webOS (TouchPad 3.0.5, TouchPad Go 3.0.4 & 2.2.4 phones)
 
 Bring TLS 1.2 / 1.3 to legacy webOS devices so they can actually connect to today's
 HTTPS sites — in the **stock browser**, in **apps** (Mojo/Enyo WebKit), in the
@@ -16,6 +16,7 @@ the rest of the 2011 OS untouched.
 | Device | codename | webOS | Status |
 |---|---|---|---|
 | HP TouchPad | `topaz` | 3.0.5 | ✅ Hardware-verified |
+| HP TouchPad Go | `opal` | 3.0.4 | ⚠️ Browser + IMAP tagfix hardware-proven; luna/downloadmgr built, full install pass pending |
 | HP Pre 3 | `mantaray` | 2.2.4 | ✅ Hardware-verified |
 | HP Veer | `broadway` | 2.2.4 | ⚠️ Built & published, untested on hardware |
 | Palm Pre 2 | `roadrunner` | 2.2.4 | ⚠️ Built & published, untested on hardware |
@@ -24,8 +25,19 @@ The device-specific packages embed a patched copy of that device's own stock bin
 so they are **built per device** and live in per-codename folders under
 [`ipks/`](ipks/). The three phones are additionally published as a **single merged
 set** in [`ipks/phone/`](ipks/phone/) (`*-phone` package names) that picks the right
-board at install time — that is the build a feed should carry. See
+board at install time — that is the build a feed should carry. The TouchPad Go ships
+the same way, as `*-go` packages in [`ipks/opal/`](ipks/opal/). See
 [Which packages for which device](#packages).
+
+**The TouchPad Go needs its own build — never install the TouchPad's.** The Go is
+webOS 3.0.4, and 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals into the
+*middle* of the `BrowserPage` vtable (125 slots on 3.0.4 vs 130 on 3.0.5).
+`libWebKitLuna.so` calls that vtable **by index**, so a topaz `BrowserServer` on a Go
+shifts every slot from 36 up by five: 3.0.4's slot 43 is `setCanBlitOnScroll(bool)`,
+called on every page layout, but lands on 3.0.5's `showPrintDialog()`. The visible
+symptom is the **print dialog opening every time you navigate** — 100% reproducible,
+even factory-fresh. The `*-go` packages carry a hard `machineName` guard that refuses
+to install on anything but `opal`.
 
 On the phones, **webOS 2.2.4 is a hard requirement**, not a recommendation: an
 un-upgraded Veer (2.2.0) or Pre 2 (2.1.0) has different stock binaries than these
@@ -109,8 +121,10 @@ To be explicit, since this trips people up:
 ## Requirements
 
 - One of the **[supported devices](#supported-devices)** above: an HP TouchPad on
-  **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), or a Pre 3 / Veer / Pre 2 on
-  **webOS 2.2.4**. Each has its own build — see [Compatibility](#compatibility).
+  **webOS 3.0.5** (Doctor 3.0.5 / "doctor305"), an HP TouchPad Go on **webOS 3.0.4**,
+  or a Pre 3 / Veer / Pre 2 on **webOS 2.2.4**. Each has its own build — see
+  [Compatibility](#compatibility). The two tablets are **not** interchangeable; a
+  TouchPad build on a Go breaks the browser (see [Supported devices](#supported-devices)).
 - A **current Mozilla CA bundle** at `/etc/ssl/certs/ca-certificates.crt` (install a
   `ca-certificates` ipk; the stock 2011 bundle won't validate modern sites). The
   browser package **warns** on a stale bundle but does not install one.
@@ -128,11 +142,12 @@ are identical on every device and live at [`ipks/`](ipks/) top level. On phones,
 prefer the merged [`ipks/phone/`](ipks/phone/) set — same packages with `-phone`
 appended to each name, one ipk covering all three boards, resolved at install time
 from `/etc/prefs/properties/machineName`. An unrecognised board (including a
-TouchPad) **exits non-zero before touching anything**. Full rationale in
-[`ipks/README.md`](ipks/README.md).
+TouchPad) **exits non-zero before touching anything**. The TouchPad Go uses
+[`ipks/opal/`](ipks/opal/), with `-go` appended to each name and the same
+`machineName` guard. Full rationale in [`ipks/README.md`](ipks/README.md).
 
 **Install in this order** (append `-phone` to the device-specific names if you're
-using the merged phone set):
+using the merged phone set, or `-go` on a TouchPad Go):
 
 | # | Package | Installs |
 |---|---------|----------|
@@ -231,7 +246,8 @@ and an end-to-end curl. Common results:
 
 Each build targets that device's **exact stock binaries** — on the TouchPad, the
 webOS 3.0.5 `BrowserServer` (md5 `0786bdf6…`) and `libWebKitLuna` (md5 `3d90fd6e…`);
-each 2.2.4 phone has its own pair. The browser package only applies the RPATH swap
+on the TouchPad Go, the webOS 3.0.4 `BrowserServer` (md5 `46b8295b…`); each 2.2.4
+phone has its own pair. The browser package only applies the RPATH swap
 if `/usr/bin/BrowserServer` is non-stock-safe (it backs up whatever it replaces).
 If `tls13-diag.sh` reports a **different** `libWebKitLuna` md5, that device is a
 different webOS build — send that file to verify the struct offsets for that variant.
@@ -239,12 +255,14 @@ different webOS build — send that file to verify the struct offsets for that v
 **Wrong-device protection.** The merged `*-phone` packages resolve the board from
 `/etc/prefs/properties/machineName` (falling back to matching a known board name in
 `/etc/palm-build-info`) and `exit 1` **before touching anything** if it isn't one of
-`mantaray` / `broadway` / `roadrunner` — a TouchPad included. The per-codename ipks
+`mantaray` / `broadway` / `roadrunner` — a TouchPad included. The `*-go` packages in
+`ipks/opal/` use the same mechanism, refusing anything but `opal`. The per-codename ipks
 in `ipks/<board>/` have no such guard and are for hand-installing on a device you have
 already identified; they also **must not be published in one feed together**, because
 all four builds share the same `Package`+`Version`+`Architecture` and ipkg's dedupe
-key is exactly that triple. That is what the `phone` target exists to solve — see
-[`ipks/README.md`](ipks/README.md).
+key is exactly that triple. That is what the `phone` and `go` targets exist to solve —
+and it is not hypothetical: a TouchPad Go handed the topaz build is exactly how the
+print-on-navigate bug above happened. See [`ipks/README.md`](ipks/README.md).
 
 ---
 
@@ -257,13 +275,24 @@ takes a device and/or a package:
 ```sh
 ./build-ipks.sh                 # every device whose stock binaries you have
 ./build-ipks.sh phone           # the merged all-three-phones set -> ipks/phone/
+./build-ipks.sh go              # the TouchPad Go set (-go names) -> ipks/opal/
 ./build-ipks.sh topaz browser   # one device, one package
 ```
 
 ## Credits / notes
 
 Reverse-engineering, struct-offset analysis, packaging and testing done against a
-live TouchPad over novacom. This does not modify or redistribute closed Palm/HP
-binaries beyond an in-place `patchelf` of the on-device `BrowserServer` (RPATH +
-NEEDED), reverted on package removal. The packages are **unsigned** — sign with the
-webos-internals feed key before publishing to the official feed.
+live TouchPad (and a TouchPad Go) over novacom. What the packages do to a device is
+an in-place `patchelf` of the on-device `BrowserServer` / `LunaDownloadMgr` (RPATH +
+NEEDED) and a one-byte `mojomail-imap` tag patch, all reverted on package removal.
+
+The one exception to "nothing redistributed" is [`devices/opal/`](devices/opal/),
+which carries the TouchPad Go's stock `BrowserServer`, `LunaDownloadMgr` and
+`mojomail-imap`. Those are committed because the Go's packages are otherwise
+unbuildable: the usual `novacom` auto-fetch returns the *patched* binary on any Go
+that already has these packages installed (the md5 guard then rejects it), and
+`prebuilt_rpath()` only looks in the unsuffixed `ipks/<board>/` dir that the `go`
+target never creates. Every other device's stock binaries stay out of the repo.
+
+The packages are **unsigned** — sign with the webos-internals feed key before
+publishing to the official feed.

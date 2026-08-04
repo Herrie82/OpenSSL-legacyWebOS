@@ -10,13 +10,17 @@ stock mojomail binary ships in its own optional package and is documented separa
 ./build-ipks.sh mail                     # one or more packages, default device set
 ./build-ipks.sh topaz browser            # one device, one package
 ./build-ipks.sh phone                    # the merged all-three-phones set -> ipks/phone/
+./build-ipks.sh go                       # the TouchPad Go set (-go names) -> ipks/opal/
 ./build-ipks.sh alldevices               # topaz + mantaray + roadrunner + broadway
 ```
 
 Arguments are **order-free** and each is either a device or a package:
 
 - **devices** — `topaz` (HP TouchPad 3.0.5), `mantaray` (Pre 3), `roadrunner` (Pre 2),
-  `broadway` (Veer); plus `alldevices` (all four, separately) and `phone` (see below).
+  `broadway` (Veer); plus `alldevices` (all four, separately), `phone` and `go` (see below).
+  `opal` (HP TouchPad Go 3.0.4) is a registered **board** but not a member of
+  `ALL_DEVICES` — it ships only via the `go` target, so a bare `./build-ipks.sh` cannot
+  emit an unsuffixed `opal` ipk that would collide with topaz's.
 - **packages** — `browser | luna | curl | ntp | mail | imaptagfix | downloadmgr | all`
   (default `all`).
 
@@ -56,6 +60,35 @@ Single-board targets are unaffected by any of this: `tgt_suffix`/`tgt_boards` re
 `""`/`"$dev"` for a real board, so `ipks/topaz/` keeps its historical flat payload
 filenames.
 
+## The `go` target (HP TouchPad Go, `opal`)
+
+`./build-ipks.sh go` emits `*-go` packages into `ipks/opal/`. It reuses the `phone`
+target's suffix machinery for a **single** board, purely to get a distinct package name
+and the `machineName` guard that comes with it: a `-go` package exits non-zero on any
+board but `opal`.
+
+This is not theoretical. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals
+(`createSensor` / `destroySensor` / `getSupportedSensors` / `setSensorRate` /
+`startSensor`) into the **middle** of the `BrowserPage` vtable, so it is 125 slots on
+3.0.4 and 130 on 3.0.5. `libWebKitLuna.so` calls that vtable **by index**, so a topaz
+`BrowserServer` on a Go shifts every slot from 36 up by five — 3.0.4's slot 43
+`setCanBlitOnScroll(bool)`, called on every page layout, lands on 3.0.5's
+`showPrintDialog()`. Result: the print dialog opens on every navigation, 100%
+reproducible. The YAP IPC layer is *not* involved — `BrowserServerBase`'s msg/asyncCmd
+symbol sets and full mangled signatures are identical between the two builds.
+
+Note the split between folder and suffix: `tgt_outdir()` keeps the output directory on
+the board codename (`ipks/opal/`, matching `devices/opal/`) while `tgt_suffix()` supplies
+the friendlier `-go` package name. Every other target's directory still equals its target
+name.
+
+**Unlike every other device, the Go's stock binaries are committed** in `devices/opal/`.
+They have to be. The `novacom` auto-fetch returns the *patched* binary from any Go that
+already has these packages installed, and the md5 guard correctly rejects it; and
+`prebuilt_rpath()` only looks in the unsuffixed `ipks/<board>/` dir, which the `go` target
+never creates. Without the committed binaries, `browser-tls13-go` and `downloadmgr-tls13-go`
+can only be rebuilt from a freshly-Doctored Go.
+
 The packages: the four core TLS packages `browser-tls13`, `luna-tls13`, `curl-tls13`,
 `ntpdate-sync`; the mail TLS package `mail-tls13` (its own large section below — it needs a
 cross-compiled libcurl); `downloadmgr-tls13`, which RPATHs `/usr/bin/LunaDownloadMgr` onto
@@ -78,7 +111,10 @@ patch, kept separate so it can be taken or left independently).
   factory/stock TouchPad** and verifies the md5. These are **not committed** (`.gitignore`
   covers `BrowserServer.bin`), so a fresh checkout has none — which is fine: only the
   `browser`/`downloadmgr` packages need them, and the `phone` target reuses the committed
-  per-board ipks instead (see above).
+  per-board ipks instead (see above). **`opal` is the exception**: its
+  `devices/opal/{BrowserServer,LunaDownloadMgr,mojomail-imap}` *are* committed, because the
+  auto-fetch returns the patched binary on an already-patched Go and `prebuilt_rpath()`
+  can't help a suffixed target (see [The `go` target](#the-go-target-hp-touchpad-go-opal)).
 - Other inputs (`openssl-1.1.1w/`, `curl-7.88.1/`, `libssl_compat.so`, `ntpdate-sync`,
   and — for mail — `curl-mail/`) are committed in the repo.
 
@@ -402,7 +438,7 @@ Recovery for the browser/luna stack (if the UI ever fails to boot) is in the
 
 ```
 build-ipks.sh          build the ipks; args are order-free devices and/or packages
-                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone
+                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone|go
                        packages: browser|luna|curl|ntp|mail|imaptagfix|downloadmgr|all
 tls13-diag.sh          on-device diagnostic for the four-package stack (PASS/FAIL VERDICT)
 mail-tls13-diag.sh     on-device diagnostic for mail-tls13
@@ -410,7 +446,9 @@ mojomail-changes.md    the single 1-byte change to a stock mojomail binary (the 
 ipks/                  built packages + slim install-order README
 ipks/<codename>/       device-specific builds (browser, luna, downloadmgr, imaptagfix)
 ipks/phone/            merged all-three-phones set (*-phone names) — the feed-safe build
-devices/<codename>/    stock Palm binaries per board (not committed; see Prerequisites)
+ipks/opal/             HP TouchPad Go set (*-go names) — built by ./build-ipks.sh go
+devices/<codename>/    stock Palm binaries per board (not committed EXCEPT devices/opal/;
+                       see Prerequisites and The `go` target)
 openssl-1.1.1w/        OpenSSL 1.1.1w tree (libssl.so.1.1, libcrypto.so.1.1; ssl->ctx @0xD8, cert @0x8)
 curl-7.88.1/           curl 7.88.1 tree for browser/curl packages (libcurl.so.4.8.0, src/.libs/curl)
 curl-mail/lib/.libs/   curl 7.61.1 libcurl for mail (vs OpenSSL 1.1 headers, --enable-ares, --with-ca-bundle)

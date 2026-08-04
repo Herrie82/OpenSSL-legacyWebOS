@@ -9,6 +9,7 @@ matching device folder **plus** the three shared packages:
 | Device | codename | device-specific folder | + shared (this dir) |
 |--------|----------|------------------------|---------------------|
 | HP TouchPad (webOS 3.0.5) | topaz | [`topaz/`](topaz/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
+| HP TouchPad Go (webOS 3.0.4) | opal | [`opal/`](opal/) — `*-go` names | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | HP Pre 3 (webOS 2.2.4) | mantaray | [`mantaray/`](mantaray/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | Palm Pre 2 (webOS 2.2.4) | roadrunner | [`roadrunner/`](roadrunner/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
 | HP Veer (webOS 2.2.4) | broadway | [`broadway/`](broadway/) | `curl-tls13`, `ntpdate-sync`, `mail-tls13` |
@@ -18,6 +19,14 @@ Each device folder holds `browser-tls13`, `luna-tls13`, `downloadmgr-tls13`, and
 `mojomail-imap-tagfix` built for that exact device. The shared `curl`/`ntp`/`mail`
 packages are identical across devices. (A new device builds the same way — drop its stock
 binaries in `devices/<codename>/` and run `./build-ipks.sh <codename>`.)
+
+> **TouchPad owners:** the TouchPad and the TouchPad Go are **not** interchangeable. The Go
+> is webOS 3.0.4, and 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals into the
+> *middle* of the `BrowserPage` vtable (125 slots vs 130). `libWebKitLuna.so` calls that
+> vtable **by index**, so a topaz `BrowserServer` on a Go shifts every slot from 36 up by
+> five — 3.0.4's slot 43 `setCanBlitOnScroll(bool)` (called on every page layout) lands on
+> 3.0.5's `showPrintDialog()`, and **the print dialog opens every time you navigate**. Use
+> [`opal/`](opal/); its `-go` packages refuse to install on anything else.
 
 ## `phone/` — one set of packages for all three phones (use this for a FEED)
 
@@ -48,8 +57,30 @@ file — so a Pre 3 could be handed the topaz build, and `luna-tls13` (which edi
 Because the names differ from the topaz ones, both families can live in a single feed — which is how
 `webOSArchive/preware-modernize-feed` ships them, one URL for every device.
 
-**Building `phone/` without the stock Palm binaries:** `devices/<board>/*.bin` is gitignored, so a
-fresh checkout has none. `prebuilt_rpath()` falls back to extracting the already-RPATH'd binary from
+## `opal/` — the TouchPad Go (`*-go` names)
+
+Same reasoning, one board. `./build-ipks.sh go` emits `org.webosinternals.browser-tls13-go`,
+`…luna-tls13-go`, `…downloadmgr-tls13-go` and `…mojomail-imap-tagfix-go` into [`opal/`](opal/).
+The distinct name is the point: `opal` and `topaz` packages would otherwise collide on that same
+`Package`+`Version`+`Architecture` key, and a Go could be handed the topaz build — which is
+exactly how the print-on-navigate bug above happened. Reusing the `phone` target's suffix
+machinery also gives these packages the same `machineName` guard, so a `-go` package
+**exits non-zero on any board but `opal`**, and a TouchPad cannot install it.
+
+Note the deliberate split: the *folder* is the board codename (`opal`, matching `devices/opal/`),
+while the *package suffix* is the friendlier `-go`. `opal` is a registered board but is **not** in
+`ALL_DEVICES`, so a bare `./build-ipks.sh` can never emit an unsuffixed `opal` ipk that would
+re-create the collision.
+
+Unlike the other devices, the Go's stock binaries **are** committed in `devices/opal/`. They have
+to be: the `novacom` auto-fetch returns the *patched* binary on any Go that already has these
+packages installed (the md5 guard then rejects it), and `prebuilt_rpath()` only looks in the
+unsuffixed `ipks/<board>/` dir that the `go` target never creates. So `./build-ipks.sh go` works
+on a fresh checkout with no device attached.
+
+**Building `phone/` without the stock Palm binaries:** the phones' and topaz's
+`devices/<board>/*.bin` are gitignored, so a fresh checkout has none of them (the Go's are the
+one exception — see [`opal/`](#opal--the-touchpad-go--go-names) for why). `prebuilt_rpath()` falls back to extracting the already-RPATH'd binary from
 the committed per-board ipk in `ipks/<board>/`, which is bit-identical to what was built and tested
 there (only the stock md5 for the postinst's "non-stock backup" NOTE then comes from the registry
 instead of a live `md5sum`). So `./build-ipks.sh phone` works anywhere; you still need GNU `ar`.
@@ -59,7 +90,8 @@ instead of a live `md5sum`). So `./build-ipks.sh phone` works anywhere; you stil
 Install via **Preware** / **WebOS Quick Install** / `ipkg install`, in this order:
 
 (On the phone set, append `-phone` to each device-specific package name below —
-`org.webosinternals.browser-tls13-phone` and so on. `curl`/`ntp`/`mail` are unchanged.)
+`org.webosinternals.browser-tls13-phone` and so on. On a TouchPad Go, append `-go`.
+`curl`/`ntp`/`mail` are unchanged.)
 
 1. `org.webosinternals.browser-tls13` — browser TLS 1.3 (provides `/usr/lib/ssl11`; **install first**)
 2. `org.webosinternals.luna-tls13` — apps (Mojo/Enyo WebKit) TLS 1.3 (**requires #1**)

@@ -3,6 +3,15 @@
 Goal: get the webOS TouchPad **browser** onto TLS 1.3 **without** the system-wide
 OpenSSL swap that broke boot before.
 
+> **The patched `BrowserServer` is per-device and must never be cross-installed.** It is
+> not just an RPATH carrier: `BrowserServer` *defines* the `BrowserPage` vtable that
+> `libWebKitLuna.so` calls **by index**. webOS 3.0.5 inserts five `Palm::WebViewClient`
+> sensor virtuals into the middle of that vtable (125 slots on 3.0.4 vs 130 on 3.0.5), so a
+> TouchPad (`topaz`) binary on a TouchPad Go (`opal`, 3.0.4) shifts every slot from 36 up by
+> five — 3.0.4's slot 43 `setCanBlitOnScroll(bool)` lands on 3.0.5's `showPrintDialog()`,
+> and the print dialog opens on every navigation. Build from each device's own stock
+> binary; see [BUILDING.md](../BUILDING.md).
+
 ## Why this works where the old `package/install.sh` didn't
 
 The old script symlinked `libssl.so.0.9.8 → libssl.so.1.1` system-wide and put the
