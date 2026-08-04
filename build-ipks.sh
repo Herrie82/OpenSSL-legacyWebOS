@@ -40,6 +40,19 @@ OUT="$BASE/ipks"; ARCH="armv7"
 # (legacy top-level BrowserServer.bin is still honored as topaz's, for back-compat.)
 # webOS device codenames (from palm-build-info BUILDNAME):
 #   topaz=TouchPad(3.0.5)  mantaray=Pre 3(2.2.4)  roadrunner=Pre 2(2.2.4)  broadway=Veer(2.2.4)
+#   opal=TouchPad Go(3.0.4) -- a registered BOARD but deliberately NOT in ALL_DEVICES; it
+#   ships only through the 'go' TARGET below, as -go packages. Keeping it out of this list is
+#   what stops a bare `./build-ipks.sh` from emitting an unsuffixed opal ipk that would
+#   collide with topaz's on ipkg's Package+Version+Arch key. Its dev_* registry entries are
+#   keyed by board name and work fine without membership here.
+#
+# opal MUST get its own BrowserServer build: 3.0.5 adds five Palm::WebViewClient sensor
+# virtuals (createSensor/destroySensor/getSupportedSensors/setSensorRate/startSensor) in the
+# MIDDLE of the vtable, so vtable-for-BrowserPage is 125 slots on 3.0.4 vs 130 on 3.0.5.
+# libWebKitLuna.so calls that vtable BY INDEX, so a topaz BrowserServer on a Go shifts every
+# slot from 36 up by +5 -- 3.0.4 slot 43 is setCanBlitOnScroll(bool) (called on every page
+# layout) but lands on 3.0.5's showPrintDialog(), which is why navigating raised the print
+# dialog. Never cross-install a BrowserServer between webOS builds.
 ALL_DEVICES="topaz mantaray roadrunner broadway"
 # --- the 'phone' MULTI-BOARD target -------------------------------------------
 # A package manager cannot tell four ipks apart when they share Package + Version +
@@ -69,22 +82,43 @@ ALL_DEVICES="topaz mantaray roadrunner broadway"
 # TouchPad packages are untouched and byte-identical.
 PHONE_BOARDS="mantaray broadway roadrunner"
 PHONE_TARGET="phone"
+# --- the 'go' target: TouchPad Go (opal) --------------------------------------
+# The Go is a ONE-board target, so it needs none of the bundling the phones do -- but it
+# does need its own PACKAGE NAME. topaz and opal ipks are both browser-tls13 at the same
+# Version+Architecture, and that triple is exactly ipkg's dedupe key, so in any feed the two
+# tablets' packages collide and a Go can be handed the topaz build. That is not hypothetical:
+# it is how the Go ended up running a 3.0.5 BrowserServer against its 3.0.4 libWebKitLuna,
+# raising the print dialog on every navigation (vtable slot 43 setCanBlitOnScroll ->
+# showPrintDialog; see the opal note on ALL_DEVICES).
+#
+# A distinct name is the whole fix, and reusing the phone target's suffix machinery gets it
+# for the cost of two case arms. It also inherits the machineName board-detect guard, so the
+# -go package HARD-REFUSES to install on a TouchPad (and topaz's unsuffixed package stays
+# byte-identical -- the Go never shared a name with it again).
+#
+# Build with:  ./build-ipks.sh go        (or 'go browser', etc.)
+# Output:      ipks/go/org.webosinternals.<pkg>-go_<ver>_armv7.ipk
+GO_BOARDS="opal"
+GO_TARGET="go"
 # Package-name suffix + the boards a target bundles. Single-board targets keep the
 # historical flat payload filenames so their ipks stay byte-identical to before.
-tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; *) echo "";; esac; }
-tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; *) echo "$1";; esac; }
+tgt_suffix() { case "$1" in "$PHONE_TARGET") echo "-phone";; "$GO_TARGET") echo "-go";; *) echo "";; esac; }
+tgt_boards() { case "$1" in "$PHONE_TARGET") echo "$PHONE_BOARDS";; "$GO_TARGET") echo "$GO_BOARDS";; *) echo "$1";; esac; }
 dev_product() { case "$1" in
   topaz)      echo "HP TouchPad (webOS 3.0.5)";;
+  opal)       echo "HP TouchPad Go (webOS 3.0.4)";;
   mantaray)   echo "HP Pre 3 (webOS 2.2.4)";;
   roadrunner) echo "Palm Pre 2 (webOS 2.2.4)";;
   broadway)   echo "HP Veer (webOS 2.2.4)";;
   phone)      echo "webOS 2.2.4 phones (HP Pre 3 / HP Veer / Palm Pre 2)";;
+  go)         echo "HP TouchPad Go (webOS 3.0.4)";;
   *)          echo "webOS device ($1)";;
 esac; }
 # Expected STOCK BrowserServer md5 -- used ONLY to verify a novacom AUTO-FETCH grabbed
 # a clean/unpatched binary. Empty => skip that guard (trust a supplied .bin).
 dev_bs_md5() { case "$1" in
   topaz)      echo "0786bdf698220aa82a90838e30355c9f";;   # TouchPad
+  opal)       echo "46b8295b41663c65738f46760d4889fa";;   # TouchPad Go (3.0.4, build 3710)
   mantaray)   echo "44d2b0ce0fa4f1e0c660039676df5e36";;   # Pre 3
   roadrunner) echo "d7dcd8a05995859c36cf8e9db3c13b25";;   # Pre 2
   broadway)   echo "6b3eddf2581ed869beedba253bb35227";;   # Veer
@@ -92,6 +126,7 @@ dev_bs_md5() { case "$1" in
 esac; }
 dev_novacom() { case "$1" in   # novacom -l device-id token, for auto-fetch matching
   topaz)      echo "topaz";;
+  opal)       echo "opal";;
   mantaray)   echo "mantaray";;
   broadway)   echo "broadway";;
   roadrunner) echo "roadrunner";;
@@ -102,8 +137,10 @@ esac; }
 # (no LunaCE; setcpushares-pdk doesn't even exist) -> 2.x gets a clean launcher-only luna.
 dev_webos() { case "$1" in
   topaz)      echo "3";;
+  opal)       echo "3";;   # TouchPad Go is webOS 3.0.4 -- same LunaCE-era wrappers as topaz
   mantaray|broadway|roadrunner) echo "2";;
   phone)      echo "2";;   # every board in the phone bundle is webOS 2.x
+  go)         echo "3";;   # the go target's only board is opal (webOS 3.0.4)
   *)          echo "2";;
 esac; }
 # Emit the shell that resolves the running board into $BOARD, for the postinst of a
@@ -116,7 +153,7 @@ if [ -r /etc/prefs/properties/machineName ]; then
     BOARD=$(cat /etc/prefs/properties/machineName 2>/dev/null | tr -d ' \t\r\n')
 fi
 if [ -z "$BOARD" ] && [ -r /etc/palm-build-info ]; then
-    for k in mantaray broadway roadrunner topaz; do
+    for k in mantaray broadway roadrunner topaz opal; do
         if grep -qi "$k" /etc/palm-build-info 2>/dev/null; then BOARD="$k"; break; fi
     done
 fi
@@ -125,6 +162,7 @@ EOF
 # Expected stock LunaDownloadMgr md5 (downloadmgr-tls13) -- verify auto-fetch only; empty=>skip.
 dev_dlmgr_md5() { case "$1" in
   topaz)      echo "587f1a9f51c3e6e1c905e44e55ea6193";;   # TouchPad
+  opal)       echo "dc7bc98ad060c7226630f1de888bcb93";;   # TouchPad Go
   mantaray)   echo "44035016e79c7787017c7e218aef00cc";;   # Pre 3
   roadrunner) echo "444b88f2b2a01278692de74848af5b92";;   # Pre 2
   broadway)   echo "549fa933af41e043257ef8f2fbc655b7";;   # Veer
@@ -135,6 +173,7 @@ esac; }
 # skipped (unknown offset). Recompute for a new device: find the single "~A", flip 0x7e->0x41.
 dev_imap_stock_md5()   { case "$1" in
   topaz)      echo "9f6489ae48fc131733c1a88a9aa1056a";;   # TouchPad
+  opal)       echo "ff74509f03889713145c474efc7b38a9";;   # TouchPad Go
   mantaray)   echo "291dbc5f6cc52392e4d653d39e528226";;   # Pre 3
   roadrunner) echo "b38230f8a0bc26c932caf7050fb93297";;   # Pre 2
   broadway)   echo "b308c86c598d66d39403bca73edfb366";;   # Veer
@@ -142,6 +181,7 @@ dev_imap_stock_md5()   { case "$1" in
 esac; }
 dev_imap_patched_md5() { case "$1" in
   topaz)      echo "78956f6daf374a9a940e914459f234c3";;   # TouchPad
+  opal)       echo "831068d42def27acca5dc091a89e9a13";;   # TouchPad Go
   mantaray)   echo "9cf606e11683d35b8f8da2145a23afc6";;   # Pre 3
   roadrunner) echo "3d614527bcaada9820e753b5eb600a17";;   # Pre 2
   broadway)   echo "00a991bbe527ff9e8d45fb0bfefd90f4";;   # Veer
@@ -149,12 +189,13 @@ dev_imap_patched_md5() { case "$1" in
 esac; }
 dev_imap_offset()      { case "$1" in
   topaz)      echo "991784";;   # TouchPad
+  opal)       echo "991664";;   # TouchPad Go (0xf21b0)
   mantaray)   echo "988724";;   # Pre 3
   roadrunner) echo "988740";;   # Pre 2
   broadway)   echo "988620";;   # Veer
   *)          echo "";;
 esac; }
-is_device() { case " $ALL_DEVICES $PHONE_TARGET " in *" $1 "*) return 0;; *) return 1;; esac; }
+is_device() { case " $ALL_DEVICES $PHONE_TARGET $GO_TARGET " in *" $1 "*) return 0;; *) return 1;; esac; }
 
 # downloadmgr_for <dev>: echo a verified stock LunaDownloadMgr path (stderr progress), or
 # non-zero if none. Prefers devices/<dev>/LunaDownloadMgr.bin; falls back to novacom fetch.
@@ -212,16 +253,17 @@ prebuilt_rpath() {
 #   ./build-ipks.sh                     -> all packages, all devices with a binary present
 #   ./build-ipks.sh mantaray browser    -> just browser-tls13 for the Pre 3
 #   ./build-ipks.sh curl ntp            -> device-independent packages only
-DEVICES=""; WANT=""
+DEVICES=""; WANT=""; DEV_ARGS_GIVEN=0
 for a in ${DEVICE:-} "$@"; do
   [ -z "$a" ] && continue
-  if is_device "$a"; then DEVICES="$DEVICES $a"
-  elif [ "$a" = alldevices ]; then DEVICES="$DEVICES $ALL_DEVICES"
+  if is_device "$a"; then DEVICES="$DEVICES $a"; DEV_ARGS_GIVEN=1
+  elif [ "$a" = alldevices ]; then DEVICES="$DEVICES $ALL_DEVICES"; DEV_ARGS_GIVEN=1
   else case "$a" in
     all) WANT="$WANT all";;
     browser|ntp|curl|luna|mail|imaptagfix|downloadmgr) WANT="$WANT $a";;
     *) echo "ERROR: unknown argument '$a'" >&2
-       echo "       devices:  $ALL_DEVICES (or 'alldevices', or '$PHONE_TARGET' = all webOS 2.x phones in one ipk)" >&2
+       echo "       devices:  $ALL_DEVICES (or 'alldevices', or '$PHONE_TARGET' = all webOS 2.x phones in one ipk," >&2
+       echo "                 or '$GO_TARGET' = TouchPad Go as its own -go package)" >&2
        echo "       packages: browser ntp curl luna mail imaptagfix downloadmgr all" >&2
        exit 1;;
   esac; fi
@@ -345,7 +387,12 @@ fi  # want downloadmgr
 mkdir -p "$OUT"
 # Blanket-clean only for a full build; a selective rebuild keeps unselected ipks
 # (pack() removes each package's own ipk before repacking, so this is safe).
-if want all; then rm -f "$OUT"/*.ipk "$OUT"/*/*.ipk 2>/dev/null || true; fi
+# Blanket-clean ONLY for a genuinely full build -- all packages AND no device/target was
+# named. A device-only invocation (e.g. `./build-ipks.sh go`, `./build-ipks.sh phone`) leaves
+# WANT empty, which defaults to "all"; without the DEV_ARGS_GIVEN guard that wiped every
+# OTHER device's ipks while rebuilding only the named one. pack() removes each package's own
+# ipk before repacking, so skipping the blanket clean here is safe.
+if want all && [ "$DEV_ARGS_GIVEN" = 0 ]; then rm -f "$OUT"/*.ipk "$OUT"/*/*.ipk 2>/dev/null || true; fi
 rm -rf "$OUT"/_b_* 2>/dev/null || true
 T="--owner=0 --group=0 --numeric-owner --format=ustar"
 # 1x1 transparent png (icon)
