@@ -31,9 +31,11 @@ binaries in `devices/<codename>/` and run `./build-ipks.sh <codename>`.)
 > modem, so the board name doesn't tell you which you have. [`opal/`](opal/)'s `-go`
 > packages are **3.0.4 only**. Every device-specific package verifies your device's own
 > stock binary by md5 and **refuses before touching anything** if it's the wrong build — so
-> a wrong pick is declined, not silently broken. On a **3.0.5 Go**, try [`topaz/`](topaz/):
-> it installs if that Go's stock `BrowserServer` matches topaz's, and tells you the md5 it
-> found if not. (Untested — no 3.0.5 Go was available.)
+> a wrong pick is declined, not silently broken. A **3.0.5 Go** needs its own build — don't
+> substitute [`topaz/`](topaz/). The vtable *layout* follows the webOS build, but the binary
+> is still per-board (the Pre 2 and Pre 3 are both 2.2.4 with the same 101-slot vtable, yet
+> their stock `BrowserServer`s differ in ~115 KB of 239 KB). `topaz/` will refuse on a 3.0.5
+> Go, and its message reports the md5 we'd need to add a second `opal` entry.
 
 ## `phone/` — one set of packages for all three phones (use this for a FEED)
 

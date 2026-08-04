@@ -47,10 +47,13 @@ the device's own stock binary by md5 (the md5 identifies the webOS build exactly
 **refuses to install, before touching anything**, if it doesn't match the build it was
 made for. So a 3.0.5 Go will simply be declined rather than silently broken.
 
-If you have a **3.0.5 Go**: try the `topaz` build. If that Go's stock `BrowserServer`
-matches topaz's (md5 `0786bdf6…`) it will install; if it doesn't, the package will say
-so and a separate 3.0.5-Go build is needed. We have no 3.0.5 Go to check against, so
-this is untested — if you have one, the refusal message reports the md5 we'd need.
+If you have a **3.0.5 Go**: it needs its own build — do *not* substitute the `topaz` one.
+The vtable *layout* is set by the webOS build, but the binary itself is still per-board:
+the Pre 2 and Pre 3 are both webOS 2.2.4 with the same 101-slot vtable, yet their stock
+`BrowserServer`s differ in ~115 KB of 239 KB. So "same webOS version" does not mean
+"same binary". The `topaz` package will refuse on a 3.0.5 Go, which is the correct
+outcome; its message reports the stock md5 found, and that is exactly what we'd need to
+add a second `opal` entry. No 3.0.5 Go was available to build from.
 
 On the phones, **webOS 2.2.4 is a hard requirement**, not a recommendation: an
 un-upgraded Veer (2.2.0) or Pre 2 (2.1.0) has different stock binaries than these

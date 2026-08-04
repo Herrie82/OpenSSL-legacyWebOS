@@ -77,13 +77,26 @@ This is not theoretical. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor v
 reproducible. The YAP IPC layer is *not* involved — `BrowserServerBase`'s msg/asyncCmd
 symbol sets and full mangled signatures are identical between the two builds.
 
-**The discriminator is the webOS BUILD, not the board.** `opal` shipped as *both* 3.0.4
-and 3.0.5 (availability depended on the cellular modem chipset), so `machineName` alone
-cannot tell you which vtable layout a Go has. The `go` target therefore covers **3.0.4
-only**, and every device-specific postinst gates on the device's own stock binary md5 —
-see [The webOS-build guard](#the-webos-build-guard) below. A 3.0.5 Go is declined by the
-`-go` package; whether the `topaz` build serves it depends on whether its stock
-`BrowserServer` matches topaz's, which is untested (no 3.0.5 Go available).
+**The shipping unit is a (board, webOS build) PAIR — neither key alone is enough.**
+Measured across the committed binaries:
+
+| | vtable slots | binary |
+|---|---|---|
+| mantaray / roadrunner / broadway (all 2.2.4) | 101 / 101 / 101 | mantaray vs broadway differ by **10 bytes**; roadrunner differs from both by **114,939** |
+| opal (3.0.4) | 125 | — |
+| topaz (3.0.5) | 130 | — |
+
+So the **vtable layout follows the webOS build** (three independent boards at 2.2.4 all
+land on 101 slots), which is why the ABI guard keys on the build. But the **binary is
+still per-board** — same version, same vtable, ~48% of bytes different between Pre 2 and
+Pre 3 — which is why the payload folders stay board-keyed. Renaming them to `3.0.4/` and
+`3.0.5/` would wrongly imply one binary per version.
+
+`opal` is simply the first board with *two* builds in the wild (3.0.4 and 3.0.5,
+depending on the cellular modem chipset), so `machineName` alone cannot tell you which
+vtable a Go has. The `go` target covers **3.0.4 only**; a 3.0.5 Go needs its own build
+rather than a substituted `topaz` binary, and the guard declines it in the meantime. See
+[The webOS-build guard](#the-webos-build-guard) below.
 
 ## The webOS-build guard
 
