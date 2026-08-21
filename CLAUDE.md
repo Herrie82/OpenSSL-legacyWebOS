@@ -19,7 +19,7 @@ Modern TLS 1.2/1.3 (OpenSSL 1.1.1w + curl 7.88.1) for the 2011 HP TouchPad
 - **Known limit:** the media worker streams HTTPS via `souphttpsrc`→`libsoup`→**gnutls** (never our OpenSSL), capped by the ~2011 stock gnutls (no TLS 1.3). A strictly-TLS-1.3-only media CDN would fail to *stream* — pre-existing, not the wrapper's doing; control-plane HTTPS (playlists/tokens in the app WebKit) already uses our modern TLS. Fix if ever needed: modernize gnutls/glib-networking for the worker.
 
 ## Status — Download Manager fix (`downloadmgr-tls13` 1.0.0, NEW package)
-- **DONE, proven on hardware (one device).** The system **Download Manager** (`com.palm.downloadmanager` / `/usr/bin/LunaDownloadMgr`) now does modern TLS for BOTH downloads and uploads. `LunaDownloadMgr` does all HTTP(S) via **libcurl and links NO OpenSSL directly** (its only TLS-bearing `DT_NEEDED` is `libcurl.so.4`), so the fix is a pure **RPATH** (`/usr/lib/ssl11dl:/usr/lib/ssl11`, DT_RPATH so it covers libcurl's transitive libssl) onto a modern libcurl — **no code patch to the 2011 binary.** Reuses the **mail** libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares, matching the DM's stock c-ares resolver) shipped into a package-private `/usr/lib/ssl11dl`. Depends on `browser-tls13` for `/usr/lib/ssl11` OpenSSL (postinst refuses if absent → can't brick downloads on wrong order; remove BEFORE browser-tls13). Backup `/var/luna/LunaDownloadMgr.tls13-orig`; postinst restarts the `LunaDownloadMgr` upstart job (no reboot).
+- **DONE, proven on hardware (one device).** The system **Download Manager** (`com.palm.downloadmanager` / `/usr/bin/LunaDownloadMgr`) now does modern TLS for BOTH downloads and uploads. `LunaDownloadMgr` does all HTTP(S) via **libcurl and links NO OpenSSL directly** (its only TLS-bearing `DT_NEEDED` is `libcurl.so.4`), so the TLS half of the fix is a pure **RPATH** (`/usr/lib/ssl11dl:/usr/lib/ssl11`, DT_RPATH so it covers libcurl's transitive libssl) onto a modern libcurl — **no code patch to the 2011 binary.** Reuses the **mail** libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares, matching the DM's stock c-ares resolver) shipped into a package-private `/usr/lib/ssl11dl`. Depends on `browser-tls13` for `/usr/lib/ssl11` OpenSSL (postinst refuses if absent → can't brick downloads on wrong order; remove BEFORE browser-tls13). Backup `/var/luna/LunaDownloadMgr.tls13-orig`; postinst restarts the `LunaDownloadMgr` upstart job (no reboot).
 - **CA gotcha (why the baked bundle is load-bearing):** the daemon hard-codes `CURLOPT_CAPATH=/var/ssl/trustedcerts`, a dir hashed by the device's **OpenSSL 0.9.8** whose subject hashes **OpenSSL 1.1 cannot find** (hash algo changed in 1.0.0) — so with TLS otherwise fine, modern certs read as *"unable to get local issuer certificate."* The mail libcurl is built `--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt`; OpenSSL 1.1 loads that bundle **in addition to** the unreadable CAPATH → validation succeeds with zero cert-related patching. (Same CA-bundle + clock prereqs as the rest of the suite: needs a current ca-certificates.crt + ntpdate-sync.)
 - **Headers (the "cookieHeader can't send a JWT" ask):** downloads only expose `cookieHeader`→`CURLOPT_COOKIE` + hardcoded `Auth-Token:`/`Device-Id:` (gated on BOTH `authToken`+`deviceId`; parsed in `cbDownload`, applied in `download()`); `customHttpHeaders` is **upload-only** (`cbUpload`/`UploadTask::setHTTPHeaders`). Arbitrary request headers on **downloads** (Authorization/Bearer JWT, X-Auth-Token) are delivered via a documented **`cookieHeader` multi-line convention** — curl 7.61.1 sends the first line as `Cookie:` and every subsequent `\r\n`/`\n`-split line as a raw request header (lead with a newline for headers-only). Frozen behavior of the pinned `.so`; no binary patch. Helper + docs in [`downloadmgr-tls13/README.md`](downloadmgr-tls13/README.md).
 - **Validated on hardware (topaz 3.0.5):** stock baseline fails modern HTTPS (`completionStatusCode -1`); after install, download of howsmyssl → `tls_version: TLS 1.3`, Let's Encrypt file → HTTP 200 validated, `cookieHeader` header-injection echoed back by postman-echo, multipart upload with `customHttpHeaders` → HTTP 200; full ipkg install(postinst)→remove(prerm restores stock, HTTP still works)→reinstall cycle clean. Build: `./build-ipks.sh downloadmgr` (needs `patchelf`, a stock `LunaDownloadMgr.bin` auto-fetched over novacom like `BrowserServer.bin`, and `curl-mail/`'s libcurl). Analysis binary in `analysis/device/LunaDownloadMgr` (gitignored, not stripped). **Not committed/pushed — maintainer opens the PR.**
@@ -46,8 +46,24 @@ IMAP+SMTP (Fastmail, TLS 1.3), and Gmail IMAP/POP/SMTP (TLS 1.2, see the ECDSA b
   Launchers are the four D-Bus `*.service` files in `/usr/share/dbus-1/system-services/`;
   reload edits with **`ls-control scan-services`** (no UI bounce). Backups go in `/var/luna`.
 - **Two dead ends proven on hardware** (don't repeat): (a) ssl11's libcurl 7.88.1 → SIGSEGV
-  in `curl_multi_remove_handle` (glibcurl was built for curl 7.21.7+c-ares); (b) STOCK libcurl
+  in `curl_multi_remove_handle`; (b) STOCK libcurl
   7.21.7 on ssl11 OpenSSL → TLS 1.3 ok then SIGSEGV inspecting the X509 cert.
+- **CORRECTION (2026-08-21) to dead end (a):** the old explanation ("glibcurl was built for
+  curl 7.21.7+c-ares, so pick a curl old enough") is **wrong**, and the 7.61.1 pin it
+  produced does **not** avoid the crash — `downloadmgr-tls13` on 7.61.1 SIGSEGVs in the same
+  function. Root cause is not curl-version skew at all: `LunaDownloadMgr` destroys and
+  recreates its curl *multi* handle at runtime (`cbIdleSourceGlibcurlCleanup` →
+  `shutdownGlibCurl`/`startupGlibCurl`) every time the transfer list empties, then touches
+  the freed multi (`curl_multi_remove_handle` on a stale `multi->msglist.head`, FaultAddress
+  `0xc8`). Controlled A/B on hardware: list allowed to empty = 58 restarts / **28 crashes per
+  60** download cycles; one download held open (restart suppressed) = 0 restarts / **0
+  crashes**. Fixed by a one-byte patch (`downloadmgr-tls13/patch-glibcurl-restart.py`) that
+  makes the existing guard branch unconditional → 0 crashes, unchanged throughput/RSS/fds.
+  **Audited the other consumers: `libemail-common` (mojomail) and `libWebKitLuna`
+  (BrowserServer + app WebKit, on 7.88.1) are clean** — both read everything out of the
+  `CURLMsg` *before* teardown and neither restarts its multi handle, so mail/browser need no
+  equivalent fix. `libmasflib`, `mms-service`, `PmNetConfigManager` and `yahoo-service` also
+  use glibcurl but are never moved off stock libcurl, so they are not exposed.
 - **The working fix (EAS, v1.2.0):** ship into `/usr/lib/ssl11mail` (and point the four
   launchers there): (1) a purpose-built **libcurl 7.61.1** `--enable-ares`, compiled vs
   OpenSSL 1.1 headers, **and `--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt`** (libcurl

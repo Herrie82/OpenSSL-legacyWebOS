@@ -6,12 +6,13 @@ and uploads** reach today's HTTPS servers. Despite the name, the Download Manage
 also performs uploads (`palm://com.palm.downloadmanager/upload`), and both paths
 are fixed by this package.
 
-## How it works (no binary code patch)
+## How it works (RPATH + one one-byte code patch)
 
 `LunaDownloadMgr` does *all* its HTTP(S) transfers through **libcurl** and links
 **no OpenSSL directly** — its only TLS-bearing `NEEDED` entry is `libcurl.so.4`.
-So the entire service is moved to modern TLS by RPATH'ing the daemon onto a modern
-libcurl; the 2011 binary's code is untouched (only its ELF `DT_RPATH`).
+So the TLS half of the fix is purely an RPATH onto a modern libcurl. One further
+**one-byte code patch** is required, for a crash that has nothing to do with TLS —
+see [The glibcurl restart crash](#the-glibcurl-restart-crash) below.
 
 - Ships **libcurl 7.61.1** into `/usr/lib/ssl11dl/` — the same build `mail-tls13`
   uses: compiled against **OpenSSL 1.1.1w**, `--enable-ares` (matches the DM's
@@ -30,6 +31,63 @@ libcurl bakes a default `CAINFO` bundle, OpenSSL 1.1 loads that bundle in additi
 to the (unreadable) CAPATH dir and validation succeeds. No cert-related patching of
 the daemon is required. A current `/etc/ssl/certs/ca-certificates.crt` (e.g.
 `com.palm.rootcertsupdate`) and a correct clock (`ntpdate-sync`) are still required.
+
+
+## The glibcurl restart crash
+
+`LunaDownloadMgr` destroys and recreates its entire curl **multi** handle at
+runtime, from a glib idle source, every time the transfer list goes empty:
+
+```
+DownloadManager::cbIdleSourceGlibcurlCleanup():
+    beq  <tail>                 ; guard
+    bl   g_log                  ; "Restarting glibcurl for cleanup"
+    bl   shutdownGlibCurl()     ; -> glibcurl_cleanup -> curl_multi_cleanup  (frees the multi)
+    bl   startupGlibCurl()      ; -> glibcurl_init                           (allocates a new one)
+```
+
+No other libcurl consumer on the device does this. Against the stock libcurl
+7.21.7 it is survivable; once the daemon is RPATH'd onto a modern libcurl it
+SIGSEGVs dereferencing a stale `multi->msglist.head`:
+
+```
+pc  curl_multi_remove_handle    lr  singlesocket    FaultAddress 0xc8
+    <- glibcurl_remove <- DownloadManager::removeTask_dl(unsigned int)
+```
+
+Controlled A/B on hardware (webOS CE 3.1.0, TouchPad, libcurl 7.61.1) — identical
+storm of fast-failing downloads, one variable changed:
+
+| condition | glibcurl restarts | crashes |
+|---|---|---|
+| transfer list allowed to empty | 58 | **28 / 60** |
+| one download held open (restart suppressed) | **0** | **0 / 30** |
+
+`build-ipks.sh` therefore runs **`patch-glibcurl-restart.py`** on the RPATH'd
+binary, making the guard branch that already skips the restart unconditional
+(`beq <tail>` → `b <tail>`, one condition-code nibble), so the teardown/recreate
+becomes dead code and the multi handle simply lives for the lifetime of the
+process — what every other consumer does.
+
+After the patch, the same 60-iteration storm gives **0 crashes and 0 new rdxd
+reports**, with no regression: transfers run at full speed, and across 40 further
+download cycles RSS went 7092 → 6940 kB with open file descriptors flat at 27 —
+the "cleanup" was reclaiming nothing. It was almost certainly a workaround for a
+curl 7.21.7-era leak that no longer exists.
+
+The patcher locates the site through the symbol table (`LunaDownloadMgr` is not
+stripped) rather than by hardcoded offset, so it works across the per-board
+binaries — the file offset differs between a stock and an already-RPATH'd binary.
+It is idempotent, and **exits non-zero rather than guessing**, so the build fails
+loudly instead of shipping a binary that would crash on every download.
+
+> Note: this is why the earlier "pick a curl old enough for glibcurl" reasoning
+> (which produced the 7.61.1 pin) does not close the bug — the crash is not
+> curl-version skew. Audited for completeness: `libemail-common` (mojomail) and
+> `libWebKitLuna` (BrowserServer / app WebKit, on curl 7.88.1) are **clean** —
+> both read everything out of the `CURLMsg` before teardown, and neither restarts
+> its multi handle.
+
 
 ## Sending extra request headers (JWT / X-Auth-Token / etc.)
 

@@ -307,7 +307,7 @@ CURLVER="1.0.1"  # curl-tls13: modern curl as /usr/bin/curl11 AND /usr/bin/curl 
 LUNAVER="1.1.3"  # luna-tls13: 1.1.3: ship a setcpushares-task env-scrub wrapper so App-Manager installs/removes (Preware installSvc/replaceSvc, WOSQI) work again. LunaSysMgr drives them via `setcpushares-task ApplicationInstallerUtility -c install ...`; setcpushares-task is a /bin/sh script, and on LunaCE the install child's env is composed with LD_PRELOAD=libpvrtc.so while our leaked LD_BIND_NOW=1 forces eager binding of libpvrtc's undefined NApp_* -> /bin/sh dies at exec (exit 127/status 32512), the install FAILS, com.palm.appinstaller drops the connection, and Preware's luna-send blocks forever ("stuck IPKG lock"/wedge). Same fix shape as setcpushares-pdk (a DIFFERENT cpu-shares helper -- pdk=app launch, task=install): static wrapper installed AS setcpushares-task (stock script -> .real) strips the tls13 additions (LD_BIND_NOW + ssl11 preload/libpath) and execs the real script; scrubbed env propagates to the whole install subtree. Hardware-proven: composed env {LD_BIND_NOW=1, LD_PRELOAD=libpvrtc.so}, wrapper -> install runs to SUCCESS. 1.1.2: ship a setcpushares-pdk env-scrub wrapper so PDK apps (QupZilla / the nizovn Qt5-glibc stack) launch again. Every PDK app is spawned by LunaSysMgr through /usr/sbin/setcpushares-pdk and inherits the launcher ssl11 env; under LunaCE the leaked LD_BIND_NOW=1 is FATAL (LunaCE PDK child env preloads libpvrtc.so, whose lazily-unresolved NApp_* symbols become eager-bind errors -> /bin/sh dies at exec, exit 127, app never starts), and under stock Luna the leaked libssl_compat.so LD_PRELOAD crashes nizovn-glibc apps. The wrapper (installed AS setcpushares-pdk, stock script moved to .real) strips ONLY the tls13 additions and execs the real script; static ELF because a shell scrub cannot outrun an env that kills /bin/sh itself. luna-tls13: app WebKit (LunaSysMgr/WebAppMgr) -> ssl11; needs browser-tls13. 1.1.1: ship a media-pipeline env-scrub wrapper so HTML5 media (Pandora/Plex/drPodder AND stock Music) plays RELIABLY. The forked media worker inherits WebAppMgr's ssl11 env but never needed OpenSSL (local files; http via libsoup->gnutls), and that inherited stack corrupts its teardown -> media wedged after ~1 song (next worker dies at init, play goes no-op until a Luna restart). The wrapper (installed AS /usr/bin/media-pipeline) restores the stock env and execs the real binary, moved to .real and given its own LS2 role. SUPERSEDES 1.1.0's LD_BIND_NOW-only fix, which only unmasked this deeper wedge. Wrapper install is independent of the launcher patch, so it also fixes 1.1.0 installs on upgrade. 1.1.0: + LD_BIND_NOW=1 (first-worker lazy-binding crash across the 0.9.8->1.1 shim).
 MAILVER="1.3.2"  # mail-tls13: mojomail (EAS/IMAP/POP/SMTP) -> purpose-built libcurl (vs OpenSSL 1.1, CA bundle baked in) + OWN superset shim + ssl11 + LD_BIND_NOW launchers; needs browser-tls13 installed + curl-mail/ (see BUILDING.md). 1.3.2: Gmail (and any ECDSA-leaf server) IMAP/POP fix -- libpalmsocket (0.9.8-built, on 1.1 via our shim) mis-verifies ECDSA leaf certs as "self signed" (X509_V_ERR=18 -> err 4010); ship /usr/lib/ssl11mail/mailssl.cnf + inject OPENSSL_CONF into the imap/pop/smtp launchers to force TLS 1.2 + RSA cert (keeps full validation; eas untouched -- it verifies via libcurl). Upgrade-safe: injects OPENSSL_CONF even on launchers a prior mail-tls13 already patched. 1.3.1: split the mojomail-imap tag patch out into its own org.webosinternals.mojomail-imap-tagfix package (take-or-leave). 1.3.0: full EAS+IMAP+SMTP proven (LD_BIND_NOW eager binding fixes intermittent ld.so SIGSEGV). 1.2.0: EAS (shim CONF_modules_free + SSL_CTX_get_ex_new_index; libcurl --with-ca-bundle)
 IMAPTAGVER="1.0.0"  # mojomail-imap-tagfix: standalone 1-byte patch of /usr/bin/mojomail-imap IMAP tag prefix ~A->AA so strict servers (Fastmail) accept it (see mojomail-changes.md). Independent of the TLS stack; take-or-leave.
-DOWNVER="1.0.0"  # downloadmgr-tls13: route the system Download Manager (/usr/bin/LunaDownloadMgr) through modern TLS. LunaDownloadMgr does ALL its HTTP(S) via libcurl and links NO OpenSSL directly, so an RPATH (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl (the mail 7.61.1 build: OpenSSL 1.1.1w + c-ares + baked CA bundle) modernizes both downloads AND uploads with no binary code patch. The baked ca-bundle makes cert validation succeed despite the daemon's hard-coded CURLOPT_CAPATH=/var/ssl/trustedcerts (which is 0.9.8-hashed and invisible to OpenSSL 1.1). Hardware-proven: download negotiates TLS 1.3, Let's Encrypt/modern certs validate, multipart upload 200. Arbitrary request headers on downloads (Authorization/Bearer JWT, X-Auth-Token) work via the cookieHeader multi-line convention (see downloadmgr-tls13/README.md); uploads already take a native customHttpHeaders array. Needs browser-tls13 (provides /usr/lib/ssl11 OpenSSL).
+DOWNVER="1.1.0"  # downloadmgr-tls13: route the system Download Manager (/usr/bin/LunaDownloadMgr) through modern TLS. LunaDownloadMgr does ALL its HTTP(S) via libcurl and links NO OpenSSL directly, so an RPATH (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl (the mail 7.61.1 build: OpenSSL 1.1.1w + c-ares + baked CA bundle) modernizes both downloads AND uploads. Plus ONE one-byte code patch that is mandatory on modern libcurl: cbIdleSourceGlibcurlCleanup() destroys and recreates the curl *multi* handle at runtime whenever the transfer list empties, which SIGSEGVs in curl_multi_remove_handle on a stale multi->msglist once off libcurl 7.21.7 (28 crashes/60 iterations, hardware-proven; 0 after). See downloadmgr-tls13/patch-glibcurl-restart.py. The baked ca-bundle makes cert validation succeed despite the daemon's hard-coded CURLOPT_CAPATH=/var/ssl/trustedcerts (which is 0.9.8-hashed and invisible to OpenSSL 1.1). Hardware-proven: download negotiates TLS 1.3, Let's Encrypt/modern certs validate, multipart upload 200. Arbitrary request headers on downloads (Authorization/Bearer JWT, X-Auth-Token) work via the cookieHeader multi-line convention (see downloadmgr-tls13/README.md); uploads already take a native customHttpHeaders array. Needs browser-tls13 (provides /usr/lib/ssl11 OpenSSL).
 # browser-tls13 / downloadmgr-tls13 stock binaries + md5s are now per-device (see the
 # registry above: dev_bs_md5 / dev_dlmgr_md5, resolved by browserserver_for / downloadmgr_for
 # from devices/<dev>/{BrowserServer,LunaDownloadMgr}.bin).
@@ -359,6 +359,16 @@ if want downloadmgr; then
 command -v patchelf >/dev/null 2>&1 || {
   echo "ERROR: 'patchelf' not found in PATH -- required to RPATH LunaDownloadMgr." >&2
   echo "       Install it (e.g. 'apt-get install patchelf', or 'brew install patchelf')." >&2
+  exit 1
+}
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: 'python3' not found in PATH -- required by" >&2
+  echo "       downloadmgr-tls13/patch-glibcurl-restart.py (the curl_multi_remove_handle" >&2
+  echo "       SIGSEGV fix). Shipping LunaDownloadMgr without it crashes on modern libcurl." >&2
+  exit 1
+}
+[ -x "$BASE/downloadmgr-tls13/patch-glibcurl-restart.py" ] || {
+  echo "ERROR: $BASE/downloadmgr-tls13/patch-glibcurl-restart.py missing or not executable." >&2
   exit 1
 }
 [ -f "$MAIL_LIBCURL" ] || {
@@ -1438,7 +1448,8 @@ fi  # want imaptagfix
 # does ALL its HTTP(S) transfers -- downloads AND uploads -- through libcurl and
 # links NO OpenSSL directly (its only TLS-bearing NEEDED is libcurl.so.4). So an
 # RPATH onto a modern libcurl is all it takes to move the whole service to TLS
-# 1.2/1.3; no code patch to the 2011 binary. We reuse the mail package's libcurl
+# 1.2/1.3; plus a mandatory one-byte patch disabling the runtime glibcurl multi-handle
+# restart (see downloadmgr-tls13/patch-glibcurl-restart.py). We reuse the mail package's libcurl
 # 7.61.1 (built vs OpenSSL 1.1.1w, --enable-ares to match the DM's c-ares resolver,
 # and --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt). That baked-in CA bundle
 # is load-bearing: the daemon hard-codes CURLOPT_CAPATH=/var/ssl/trustedcerts, a
@@ -1479,6 +1490,25 @@ for b in $boards; do
     cp "$pre" "$F7/$dlf"; chmod 0644 "$F7/$dlf"; rm -f "$pre"
     echo "  [$dev/$b] reusing the already-RPATH'd LunaDownloadMgr from ipks/$(tgt_outdir "$b") (no stock binary in this checkout)"
   fi
+  # Disable the runtime glibcurl (curl *multi* handle) teardown/recreate in
+  # cbIdleSourceGlibcurlCleanup. Stock survives it on libcurl 7.21.7; RPATH'd onto
+  # a modern libcurl the daemon SIGSEGVs in curl_multi_remove_handle on a stale
+  # multi->msglist (hardware-proven: 28 crashes/60 iterations -> 0 with this patch).
+  # See downloadmgr-tls13/patch-glibcurl-restart.py. Runs on BOTH paths above, and
+  # before r_md5 below so postinst records the shipped bytes. Idempotent.
+  # NB: `cmd; prc=$?` is NOT safe under `set -e` (line 20) -- a non-zero exit
+  # aborts the script before the assignment runs, and exit 3 is a NORMAL result
+  # here. `|| prc=$?` keeps the failure handled.
+  prc=0
+  "$BASE/downloadmgr-tls13/patch-glibcurl-restart.py" "$F7/$dlf" || prc=$?
+  case $prc in
+    0) ;;   # patched, or already patched
+    3) echo "  [$dev/$b] no runtime glibcurl restart in this build (webOS 2.x) -- patch not applicable" ;;
+    *) echo "ERROR: could not apply the glibcurl-restart patch to the $b LunaDownloadMgr (rc=$prc)." >&2
+       echo "       Refusing to ship it unpatched -- that reintroduces the" >&2
+       echo "       curl_multi_remove_handle SIGSEGV on every download." >&2
+       exit 1 ;;
+  esac
   r_md5=$(md5sum "$F7/$dlf" | cut -d' ' -f1)   # so postinst never backs up our own binary as "stock"
   echo "  [$dev/$b] $(dev_product "$b"): stock $s_md5 -> RPATH'd $r_md5"
   DL_CASES="$DL_CASES  $b) DL_FILE=$dlf; STOCK_DLMGR_MD5=$s_md5; RPATH_DLMGR_MD5=$r_md5; EXPECT_OSVER=$(dev_osver "$b");;
@@ -1509,7 +1539,7 @@ Description: Modern TLS 1.2/1.3 for the webOS Download Manager on $PRODUCT (down
 Section: System
 Priority: optional
 Depends: org.webosinternals.browser-tls13$sfx
-Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Download Manager TLS 1.3 ($dev)", "FullDescription":"Routes the system Download Manager (com.palm.downloadmanager / /usr/bin/LunaDownloadMgr) on $PRODUCT through modern TLS so background downloads AND uploads reach today's HTTPS servers. LunaDownloadMgr does all its transfers via libcurl and links no OpenSSL directly, so it is simply RPATH'd (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + a baked-in CA bundle) -- no patch to the binary's code. The baked CA bundle is required because the daemon hard-codes an OpenSSL-0.9.8-hashed CAPATH that OpenSSL 1.1 cannot read. On the TouchPad this is hardware-proven (downloads negotiate TLS 1.3, modern/Let's Encrypt certificates validate, multipart uploads return 200). Bonus: downloads can now send arbitrary request headers (Authorization: Bearer <JWT>, X-Auth-Token, ...) via the cookieHeader multi-line convention (uploads already accept a customHttpHeaders array). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11 OpenSSL); a current /etc/ssl/certs/ca-certificates.crt (e.g. com.palm.rootcertsupdate) and a correct clock (org.webosinternals.ntpdate-sync) are needed for cert validation. Remove this BEFORE browser-tls13. No reboot needed.", "License":"OpenSSL/curl" }
+Source: { "Type":"Application", "Feed":"WebOS Internals", "Category":"System", "Title":"Download Manager TLS 1.3 ($dev)", "FullDescription":"Routes the system Download Manager (com.palm.downloadmanager / /usr/bin/LunaDownloadMgr) on $PRODUCT through modern TLS so background downloads AND uploads reach today's HTTPS servers. LunaDownloadMgr does all its transfers via libcurl and links no OpenSSL directly, so it is RPATH'd (/usr/lib/ssl11dl:/usr/lib/ssl11) onto a modern libcurl 7.61.1 (OpenSSL 1.1.1w + c-ares + a baked-in CA bundle). One further one-byte code patch is required: the daemon tears down and recreates its curl multi handle at runtime every time the transfer list empties, which is survivable on the stock libcurl 7.21.7 but SIGSEGVs in curl_multi_remove_handle on any modern libcurl -- that path is disabled here (hardware-proven: 28 crashes per 60 download cycles before, 0 after, with no change in throughput, memory or file descriptors). The baked CA bundle is required because the daemon hard-codes an OpenSSL-0.9.8-hashed CAPATH that OpenSSL 1.1 cannot read. On the TouchPad this is hardware-proven (downloads negotiate TLS 1.3, modern/Let's Encrypt certificates validate, multipart uploads return 200). Bonus: downloads can now send arbitrary request headers (Authorization: Bearer <JWT>, X-Auth-Token, ...) via the cookieHeader multi-line convention (uploads already accept a customHttpHeaders array). REQUIRES org.webosinternals.browser-tls13 (provides /usr/lib/ssl11 OpenSSL); a current /etc/ssl/certs/ca-certificates.crt (e.g. com.palm.rootcertsupdate) and a correct clock (org.webosinternals.ntpdate-sync) are needed for cert validation. Remove this BEFORE browser-tls13. No reboot needed.", "License":"OpenSSL/curl" }
 EOF
 
 printf '#!/bin/sh\n' > "$B7/control/postinst"
@@ -1531,6 +1561,11 @@ PID="$ID7"
 EOF
 fi
 cat >> "$B7/control/postinst" <<'EOF'
+# Is a given LunaDownloadMgr one of OUR builds (any version, any board)? All of
+# them carry DT_RPATH /usr/lib/ssl11dl:/usr/lib/ssl11; no stock one mentions
+# ssl11dl. Content beats an md5 list: it covers versions released before this
+# check existed, and every board, with no build-time bookkeeping.
+is_ours() { grep -q ssl11dl "$1" 2>/dev/null; }
 # --- webOS-BUILD guard (must run before anything is touched) ------------------
 # Same reasoning as browser-tls13: a stock binary is only valid on the webOS BUILD it came
 # from, and the reported webOS version -- not the stock md5 -- is what identifies that build
@@ -1550,7 +1585,14 @@ if [ -n "$osv" ] && [ "$osv" != "$EXPECT_OSVER" ]; then
     echo "  NOT patching -- a build for this device's webOS version is needed."
     exit 1
 fi
-if [ -z "$osv" ] && [ -n "$ref" ] && [ "$ref" != "$STOCK_DLMGR_MD5" ] && [ "$ref" != "$RPATH_DLMGR_MD5" ]; then
+if [ -f /var/luna/LunaDownloadMgr.tls13-orig ] && is_ours /var/luna/LunaDownloadMgr.tls13-orig; then
+    refmine=1                    # reference is one of ours: it identifies no build
+elif [ ! -f /var/luna/LunaDownloadMgr.tls13-orig ] && is_ours /usr/bin/LunaDownloadMgr; then
+    refmine=1
+else
+    refmine=0
+fi
+if [ -z "$osv" ] && [ "$refmine" = 0 ] && [ -n "$ref" ] && [ "$ref" != "$STOCK_DLMGR_MD5" ] && [ "$ref" != "$RPATH_DLMGR_MD5" ]; then
     echo "downloadmgr-tls13: ERROR -- cannot read this device's webOS version from"
     echo "  /etc/palm-build-info, and its stock LunaDownloadMgr ($ref) is not the webOS"
     echo "  $EXPECT_OSVER one ($STOCK_DLMGR_MD5). NOT patching."
@@ -1580,14 +1622,35 @@ cp -f "$SRC/ssl11dl/libcurl.so.4.5.0" /usr/lib/ssl11dl/
 chmod 755 /usr/lib/ssl11dl/libcurl.so.4.5.0
 ln -sf libcurl.so.4.5.0 /usr/lib/ssl11dl/libcurl.so.4
 
-# 2. back up the stock LunaDownloadMgr ONCE (only if no backup yet AND it isn't
-#    already our RPATH'd build), then swap ours in. Mirrors browser-tls13 so the
-#    package stays cleanly uninstallable even over a non-stock daemon.
+# 2. back up the stock LunaDownloadMgr ONCE, then swap ours in. Mirrors
+#    browser-tls13 so the package stays cleanly uninstallable.
+#
+#    The restore point must NEVER be one of our own builds. If it is, prerm would
+#    "restore" an RPATH'd binary AND delete /usr/lib/ssl11dl, leaving the daemon
+#    unable to load its libcurl at all -- downloads dead. (With no backup prerm
+#    correctly keeps ssl11dl, so no backup is strictly safer than a wrong one.)
+#    Identify our builds by content, not md5: every one of them carries
+#    DT_RPATH /usr/lib/ssl11dl:/usr/lib/ssl11 and no stock LunaDownloadMgr
+#    mentions ssl11dl -- so this holds across boards and across our versions,
+#    including the pre-1.1.0 ipks that predate this check.
 cur=$(md5sum /usr/bin/LunaDownloadMgr 2>/dev/null | cut -d' ' -f1)
-if [ ! -f /var/luna/LunaDownloadMgr.tls13-orig ] && [ "$cur" != "$RPATH_DLMGR_MD5" ] && [ -f /usr/bin/LunaDownloadMgr ]; then
-    mkdir -p /var/luna 2>/dev/null
-    cp -p /usr/bin/LunaDownloadMgr /var/luna/LunaDownloadMgr.tls13-orig
-    [ "$cur" = "$STOCK_DLMGR_MD5" ] || echo "NOTE: backed up a non-stock LunaDownloadMgr ($cur) as the uninstall restore point."
+# Repair a restore point poisoned by an earlier install (or a deleted-backup upgrade).
+if [ -f /var/luna/LunaDownloadMgr.tls13-orig ] && is_ours /var/luna/LunaDownloadMgr.tls13-orig; then
+    echo "NOTE: the existing uninstall restore point is one of our RPATH'd builds, not a stock"
+    echo "  LunaDownloadMgr -- discarding it. Uninstall will now keep /usr/lib/ssl11dl so"
+    echo "  downloads keep working. For a true stock restore point, reinstall via webOS Doctor."
+    rm -f /var/luna/LunaDownloadMgr.tls13-orig
+fi
+if [ ! -f /var/luna/LunaDownloadMgr.tls13-orig ] && [ -f /usr/bin/LunaDownloadMgr ]; then
+    if is_ours /usr/bin/LunaDownloadMgr; then
+        echo "NOTE: no stock backup found and the installed LunaDownloadMgr ($cur) is already one"
+        echo "  of ours -- not creating a restore point from it. Uninstall will keep"
+        echo "  /usr/lib/ssl11dl so downloads keep working."
+    else
+        mkdir -p /var/luna 2>/dev/null
+        cp -p /usr/bin/LunaDownloadMgr /var/luna/LunaDownloadMgr.tls13-orig
+        [ "$cur" = "$STOCK_DLMGR_MD5" ] || echo "NOTE: backed up a non-stock LunaDownloadMgr ($cur) as the uninstall restore point."
+    fi
 fi
 cp -f "$SRC/$DL_FILE" /usr/bin/LunaDownloadMgr
 chmod 0750 /usr/bin/LunaDownloadMgr
@@ -1611,7 +1674,14 @@ i=0; while [ $i -lt 8 ]; do ps=$(pidof LunaDownloadMgr 2>/dev/null); [ -z "$ps" 
 # Restore stock ONLY if we have the backup; otherwise the live LunaDownloadMgr is
 # our RPATH'd one and removing /usr/lib/ssl11dl would leave it unable to load its
 # libcurl (dead download service) -- so keep the lib in place.
-if [ -f /var/luna/LunaDownloadMgr.tls13-orig ]; then
+if [ -f /var/luna/LunaDownloadMgr.tls13-orig ] && grep -q ssl11dl /var/luna/LunaDownloadMgr.tls13-orig 2>/dev/null; then
+    # Restoring this would put back an RPATH'd binary and then delete the libcurl it
+    # needs -- a dead download service. Treat it as no backup at all.
+    echo "WARNING: the restore point is one of our RPATH'd builds, not a stock LunaDownloadMgr."
+    echo "  Not restoring it, and keeping /usr/lib/ssl11dl so downloads keep working."
+    echo "  Reinstall via webOS Doctor to get the stock daemon back."
+    rm -f /var/luna/LunaDownloadMgr.tls13-orig
+elif [ -f /var/luna/LunaDownloadMgr.tls13-orig ]; then
     mv -f /var/luna/LunaDownloadMgr.tls13-orig /usr/bin/LunaDownloadMgr
     chmod 0750 /usr/bin/LunaDownloadMgr
     rm -rf /usr/lib/ssl11dl
