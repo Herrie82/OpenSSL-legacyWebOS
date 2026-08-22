@@ -6,20 +6,128 @@ stock mojomail binary ships in its own optional package and is documented separa
 [mojomail-changes.md](mojomail-changes.md).
 
 ```sh
-./build-ipks.sh                 # build everything into ipks/
-./build-ipks.sh mail            # build one or more
-                                # (browser | luna | curl | ntp | mail | imaptagfix | all)
+./build-ipks.sh                          # every device you have binaries for, all packages
+./build-ipks.sh mail                     # one or more packages, default device set
+./build-ipks.sh topaz browser            # one device, one package
+./build-ipks.sh phone                    # the merged all-three-phones set -> ipks/phone/
+./build-ipks.sh alldevices               # topaz + mantaray + roadrunner + broadway
 ```
+
+Arguments are **order-free** and each is either a device or a package:
+
+- **devices** — `topaz` (HP TouchPad **and** TouchPad Go, both webOS 3.0.5), `mantaray`
+  (Pre 3), `roadrunner` (Pre 2), `broadway` (Veer); plus `alldevices` (all four,
+  separately) and `phone` (see below). The TouchPad Go (`opal`) has **no target of its
+  own**: doctor it to 3.0.5 — there is a Doctor for every Go variant — and it takes the
+  `topaz` build, which is hardware-proven on one.
+- **packages** — `browser | luna | curl | ntp | mail | imaptagfix | downloadmgr | all`
+  (default `all`).
+
+With **no device given**, the default set is every device whose stock binaries are
+actually present (`devices/<dev>/BrowserServer.bin`, or `BrowserServer.bin` at the repo
+root for `topaz`) — so a plain `./build-ipks.sh` just works for whatever the maintainer
+has dropped in. Output goes to `ipks/<device>/`, except the device-independent
+`curl`/`ntp`/`mail` packages, which land in `ipks/` top level.
 
 Paths resolve relative to the script (the repo checkout), so it runs from wherever you
 clone it. It **fails fast with a descriptive error** if a prerequisite is missing. The
 package selector lets you (re)build `mail` without a clean stock device attached — handy
 because the browser package needs a stock `BrowserServer` and mail does not.
 
+## The `phone` target (one ipk for all three phones)
+
+`./build-ipks.sh phone` is not a device — it's a **multi-board build**. It emits one ipk
+per package, named `*-phone` (`org.webosinternals.browser-tls13-phone` and so on), each
+bundling every phone board's pieces and selecting at install time from
+`/etc/prefs/properties/machineName`, falling back to matching a known board name in
+`/etc/palm-build-info`. An unrecognised board — a TouchPad included — **exits non-zero
+before touching anything**.
+
+This exists because the four per-board builds share the same `Package` **and** `Version`
+**and** `Architecture`, which is exactly ipkg's dedupe key — so they can never coexist in
+a feed, and a Pre 3 could be handed the topaz build. Distinct names fix it. Full
+reasoning, and the sizes that make bundling cheap, are in
+[`ipks/README.md`](ipks/README.md).
+
+**It builds without the stock Palm binaries.** `prebuilt_rpath()` falls back to extracting
+the already-RPATH'd binary out of the committed per-board ipk in `ipks/<board>/` (verified
+bit-identical to all six shipped binaries), so `./build-ipks.sh phone` works on any
+checkout — you still need GNU `ar`. Keep `ipks/{topaz,mantaray,roadrunner,broadway}/` in
+the repo for this reason.
+
+Single-board targets are unaffected by any of this: `tgt_suffix`/`tgt_boards` return
+`""`/`"$dev"` for a real board, so `ipks/tablet/` keeps its historical flat payload
+filenames. (`tgt_outdir()` maps only `topaz` → `tablet/`, because that build serves both
+3.0.5 tablets; every other target's folder is its own name.)
+
+## The TouchPad Go (`opal`) — doctor it to 3.0.5
+
+The Go **had** its own `go` target emitting `-3.0.4` packages. It no longer does: a Doctor
+exists that brings every Go variant up to webOS 3.0.5, and at 3.0.5 the `topaz` build is
+the correct one for it. Verified on a doctored Go — it runs the `topaz` `BrowserServer`
+(`a56bf4fe…`) and `LunaDownloadMgr` (`de784d7f…`) and takes the IMAP tagfix.
+
+The reason the Go ever needed separate packages is worth keeping, because it is what the
+build guard now enforces. webOS 3.0.5 inserts five `Palm::WebViewClient` sensor virtuals
+(`createSensor` / `destroySensor` / `getSupportedSensors` / `setSensorRate` /
+`startSensor`) into the **middle** of the `BrowserPage` vtable, so it is 125 slots on
+3.0.4 and 130 on 3.0.5. `libWebKitLuna.so` calls that vtable **by index**, so a 3.0.5
+`BrowserServer` on a 3.0.4 tablet shifts every slot from 36 up by five — 3.0.4's slot 43
+`setCanBlitOnScroll(bool)`, called on every page layout, lands on 3.0.5's
+`showPrintDialog()`. Result: the print dialog opens on every navigation, 100%
+reproducible. The YAP IPC layer is *not* involved — `BrowserServerBase`'s msg/asyncCmd
+symbol sets and full mangled signatures are identical between the two builds.
+
+**The vtable layout follows the webOS BUILD; the binary is still per-device.** Measured
+across the binaries we have:
+
+| | vtable slots | binary |
+|---|---|---|
+| mantaray / roadrunner / broadway (all 2.2.4) | 101 / 101 / 101 | mantaray vs broadway differ by **10 bytes**; roadrunner differs from both by **114,939** |
+| opal (3.0.4, pre-Doctor) | 125 | — |
+| topaz / doctored opal (3.0.5) | 130 | same 252,564 bytes, **6,627** of them different (2.6 %) |
+
+Three independent boards at 2.2.4 all land on 101 slots, which is why the guard keys on the
+build. But two devices on the *same* build still ship different binaries — mildly on the two
+3.0.5 tablets, drastically between Pre 2 and Pre 3 (~48 % of bytes) — so **a stock md5 is a
+per-device fact, not a per-build one**, and gating on it would wrongly decline a doctored Go.
+That is precisely the bug that the md5-based version of this guard had.
+
+## The webOS-build guard
+
+Every `browser-tls13` / `downloadmgr-tls13` postinst, for **all** targets (suffixed or
+not), checks the device's webOS version before touching anything:
+
+```sh
+osv = PRODUCT_VERSION_STRING from /etc/palm-build-info      # e.g. "3.0.5"
+if osv and osv != EXPECT_OSVER:            print expected-vs-actual; exit 1   # wrong build
+if not osv and stock md5 is unrecognised:  exit 1                            # can't tell -> refuse
+if stock md5 is unrecognised (osv matched): print NOTE; proceed               # e.g. a doctored Go
+```
+
+`PRODUCT_VERSION_STRING` is the invariant that matters, and it is now proven to hold across
+two *different* 3.0.5 binaries. The stock md5 survives as a fallback for a device whose
+`/etc/palm-build-info` can't be read, and as the trigger for the "backed up a non-stock
+binary" note. The RPATH'd md5 is also accepted everywhere, so reinstall/upgrade over our own
+binary still works. Registry: `dev_osver()` supplies the expected version.
+
+Verified on hardware and by unit-testing the emitted postinst across all six paths: a
+doctored Go (3.0.5, stock `aae93132…`) installs with the NOTE and works; 3.0.4 and 2.2.4
+devices are refused, the 3.0.4 message telling the owner to doctor the Go; an unreadable
+version falls back to the md5 rule in both directions.
+
+`mojomail-imap-tagfix` gets the same treatment from the other end: `dev_imap_variants()`
+lists every known `<stock md5>:<patched md5>:<offset>` for a board and the postinst matches
+the **live** binary, so one package patches a TouchPad (offset 991784) or a doctored Go
+(offset 991664) and declines anything unrecognised. Add a variant by finding the single
+`~A` in the binary, flipping `0x7e`→`0x41`, and md5-ing both.
+
 The packages: the four core TLS packages `browser-tls13`, `luna-tls13`, `curl-tls13`,
 `ntpdate-sync`; the mail TLS package `mail-tls13` (its own large section below — it needs a
-cross-compiled libcurl); and one **optional, standalone** package `mojomail-imap-tagfix` (a
-one-byte mojomail-imap patch, kept separate so it can be taken or left independently).
+cross-compiled libcurl); `downloadmgr-tls13`, which RPATHs `/usr/bin/LunaDownloadMgr` onto
+the ssl11 curl (built like `browser`, from that device's stock binary — no code patch);
+and one **optional, standalone** package `mojomail-imap-tagfix` (a one-byte mojomail-imap
+patch, kept separate so it can be taken or left independently).
 
 ## Prerequisites (all packages)
 
@@ -29,10 +137,16 @@ one-byte mojomail-imap patch, kept separate so it can be taken or left independe
   have long names; BSD `ar` (stock macOS) writes an incompatible long-name format the
   device's ipkg/appinstaller can't read. On macOS: `brew install binutils`. On Linux
   the system `ar` is already GNU. The script aborts with a hint if it can't find GNU ar.
-- **`BrowserServer.bin`** — the stock 3.0.5 binary (md5 `0786bdf698220aa82a90838e30355c9f`)
-  at the repo root. If absent, the script **auto-fetches it over `novacom` from a
-  connected, factory/stock TouchPad** and verifies the md5. Only needed when building
-  `browser` (the selector skips this gate otherwise).
+- **Stock device binaries** — for `topaz`, `BrowserServer.bin` (md5
+  `0786bdf698220aa82a90838e30355c9f`) at the repo root; for the other boards,
+  `devices/<codename>/BrowserServer.bin` (and `LunaDownloadMgr.bin` for `downloadmgr`).
+  If absent for `topaz`, the script **auto-fetches it over `novacom` from a connected,
+  factory/stock TouchPad** and verifies the md5. These are **not committed** (`.gitignore`
+  covers `BrowserServer.bin`), so a fresh checkout has none — which is fine: only the
+  `browser`/`downloadmgr` packages need them, and the `phone` target reuses the committed
+  per-board ipks instead (see above). Note the auto-fetch returns the *patched* binary from
+  a device that already has these packages installed — fetch from a stock/doctored one, or
+  restore `/usr/bin/BrowserServer.tls13-orig` first.
 - Other inputs (`openssl-1.1.1w/`, `curl-7.88.1/`, `libssl_compat.so`, `ntpdate-sync`,
   and — for mail — `curl-mail/`) are committed in the repo.
 
@@ -74,9 +188,23 @@ to the official feed.
 
 Routes the native mail transports (`mojomail-eas` / `-imap` / `-pop` / `-smtp`) through the
 OpenSSL 1.1.1w stack so the stock Email app syncs Exchange ActiveSync / IMAP / POP / SMTP
-accounts on modern TLS 1.2/1.3 servers. **Hardware-proven (v1.3.0):** EAS (Zoho —
-Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy) and IMAP+SMTP (Fastmail, TLS 1.3) all
-validate and sync.
+accounts on modern TLS 1.2/1.3 servers. **Hardware-proven (v1.3.2):** EAS (Zoho —
+Mail/Contacts/Calendar/Tasks, TLS 1.3, no proxy), IMAP+SMTP (Fastmail, TLS 1.3), and Gmail
+IMAP/POP/SMTP (TLS 1.2 — see below) all validate and sync.
+
+**v1.3.2 — Gmail / ECDSA-leaf fix.** `libpalmsocket` (the stock IMAP/POP/SMTP TLS library,
+0.9.8-built, run on 1.1.1w via our shim) **mis-verifies ECDSA (P-256) leaf certificates** —
+it declares the leaf "self signed" (`X509_V_ERR=18`) at depth 0 and never links it, so
+validation fails with **error 4010 "self signed certificate."** RSA leaves verify fine.
+Google's `imap.`/`pop.gmail.com` serve ECDSA leaves by default (Fastmail serves RSA, hence it
+always worked). The fix is **config-only and keeps full certificate validation:** the postinst
+ships `/usr/lib/ssl11mail/mailssl.cnf` (`[system_default]` → `MaxProtocol=TLSv1.2` +
+`SignatureAlgorithms=RSA+SHA256:RSA+SHA384:RSA+SHA512`) and adds `OPENSSL_CONF=…mailssl.cnf`
+to the **imap/pop/smtp** launchers (not `eas`, which verifies via libcurl and has no bug),
+forcing an RSA server cert. The `OPENSSL_CONF` injection is a step *independent* of the
+existing "already patched?" check, so **upgrades from ≤1.3.1 are safe** (their launchers are
+already env-prefixed but still get `OPENSSL_CONF`). Removal (prerm) reverts all launchers to
+stock. Note: Gmail also requires a **Google App Password** for IMAP (unrelated to TLS).
 
 Unlike the other four packages, mail-tls13 needs **one cross-compiled artifact**: a
 purpose-built `libcurl` (already committed at `curl-mail/lib/.libs/libcurl.so.4.5.0`, so you
@@ -341,11 +469,17 @@ Recovery for the browser/luna stack (if the UI ever fails to boot) is in the
 ## Repo layout
 
 ```
-build-ipks.sh          build the ipks ([browser|luna|curl|ntp|mail|imaptagfix|all]; default all)
+build-ipks.sh          build the ipks; args are order-free devices and/or packages
+                       devices:  topaz|mantaray|roadrunner|broadway|alldevices|phone
+                       packages: browser|luna|curl|ntp|mail|imaptagfix|downloadmgr|all
 tls13-diag.sh          on-device diagnostic for the four-package stack (PASS/FAIL VERDICT)
 mail-tls13-diag.sh     on-device diagnostic for mail-tls13
 mojomail-changes.md    the single 1-byte change to a stock mojomail binary (the imaptagfix package)
 ipks/                  built packages + slim install-order README
+ipks/tablet/           webOS 3.0.5 tablets: HP TouchPad + doctored TouchPad Go (./build-ipks.sh topaz)
+ipks/<codename>/       per-phone builds (browser, luna, downloadmgr, imaptagfix)
+ipks/phone/            merged all-three-phones set (*-phone names) — the feed-safe build
+devices/<codename>/    stock Palm binaries per board (not committed; see Prerequisites)
 openssl-1.1.1w/        OpenSSL 1.1.1w tree (libssl.so.1.1, libcrypto.so.1.1; ssl->ctx @0xD8, cert @0x8)
 curl-7.88.1/           curl 7.88.1 tree for browser/curl packages (libcurl.so.4.8.0, src/.libs/curl)
 curl-mail/lib/.libs/   curl 7.61.1 libcurl for mail (vs OpenSSL 1.1 headers, --enable-ares, --with-ca-bundle)

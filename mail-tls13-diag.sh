@@ -48,6 +48,16 @@ for s in eas imap pop smtp; do
     else say "  --    com.palm.$s.service NOT patched"; fi
 done
 
+say "=== 3b. Gmail/ECDSA fix (1.3.2): OPENSSL_CONF on imap/pop/smtp, cnf present ==="
+if [ -f "$MAILDIR/mailssl.cnf" ]; then ok "$MAILDIR/mailssl.cnf present"
+else say "  --    $MAILDIR/mailssl.cnf MISSING (Gmail IMAP/POP will fail: ECDSA leaf 'self signed' err 4010)"; fi
+for s in imap pop smtp; do
+    F="/usr/share/dbus-1/system-services/com.palm.$s.service"
+    [ -f "$F" ] || continue
+    if grep -q 'OPENSSL_CONF=/usr/lib/ssl11mail/mailssl.cnf' "$F" 2>/dev/null; then ok "com.palm.$s.service has OPENSSL_CONF (TLS1.2+RSA)"
+    else say "  --    com.palm.$s.service NO OPENSSL_CONF -- Gmail ECDSA fix not applied"; fi
+done
+
 say "=== 4. loader resolves mojomail-eas to ssl11 openssl + OUR ssl11mail libcurl ==="
 if [ -x /usr/bin/mojomail-eas ]; then
     LD_LIBRARY_PATH=$MAILDIR LD_PRELOAD=$MAILDIR/libssl_compat.so ldd /usr/bin/mojomail-eas 2>&1 \
