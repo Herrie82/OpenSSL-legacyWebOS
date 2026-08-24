@@ -8,19 +8,29 @@
  *
  * luna-tls13 exports LD_BIND_NOW=1 (plus the ssl11 LD_PRELOAD / LD_LIBRARY_PATH)
  * in the LunaSysMgr upstart launcher so app WebKit gets modern TLS.  Those leak
- * into the children LunaSysMgr spawns.  On LunaCE the install child's env is
- * composed with LD_PRELOAD=libpvrtc.so -- a stock lib with lazily-unresolved
- * NApp_* symbols.  The leaked LD_BIND_NOW=1 forces eager binding, so /bin/sh
- * (running setcpushares-task) dies at load with
+ * into the children LunaSysMgr spawns.  The install child's env is composed with
+ * LD_PRELOAD=libpvrtc.so -- a stock lib with lazily-unresolved NApp_* symbols --
+ * on LunaCE (webOS 3.0.5) AND on stock webOS 2.2.4 sysmgr, confirmed on a Pre 3
+ * by swapping a static tracer in as setcpushares-task and dumping the real argv
+ * and env.  So this wrapper ships on both families.
+ *
+ * The leaked LD_BIND_NOW=1 forces eager binding, so /bin/sh (running
+ * setcpushares-task) dies at load with
  *   "symbol lookup error: /usr/lib/libpvrtc.so: undefined symbol:
  *    NApp_GetPortabilityValue"  -> exit 127 (status 32512), BEFORE the real
  * installer ever runs.  LunaSysMgr logs "util_ipkgInstallDone(): unknown return
  * code 127" and the install FAILS.  com.palm.appinstaller then drops its
  * connection, so the caller's subscription never gets a clean terminal response:
  * Preware's `luna-send ... appinstaller/installNoVerify` blocks forever and
- * Preware wedges ("stuck IPKG lock").  Same root cause and fix shape as the
- * PDK-app death handled by setcpushares-pdk-wrap -- a DIFFERENT cpu-shares
- * helper (this one is the install/task path; that one is the PDK-launch path).
+ * Preware wedges ("stuck IPKG lock").  On webOS 2.2.4 the same death surfaces
+ * more politely -- appinstaller answers FAILED_IPKG_INSTALL instead of wedging --
+ * but the install fails just the same.  (Preware's DEFAULT installCli path runs
+ * ipkg from its own hub-launched, clean env and is unaffected on both, which is
+ * why the 2.x breakage hid behind a working Preware.)
+ *
+ * Same root cause and fix shape as the PDK-app deaths handled by
+ * setcpushares-pdk-wrap (webOS 3.0.5) and jailer-wrap (webOS 2.x) -- DIFFERENT
+ * spawn helpers (this one is the install/task path; those are PDK launch).
  * Confirmed on hardware: composed env = { LD_BIND_NOW=1, LD_PRELOAD=libpvrtc.so };
  * stripping LD_BIND_NOW makes libpvrtc's symbols lazy again and the install
  * runs to SUCCESS.
